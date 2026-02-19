@@ -79,6 +79,21 @@ flutter build apk --release
 flutter build appbundle --release
 ```
 
+## GitHub Actions build pipeline
+
+This repo now includes a manual GitHub Actions workflow at `.github/workflows/build-artifacts.yml`.
+
+To run it:
+
+1. Push your branch to GitHub.
+2. Open **Actions** → **Build Installers and Executables**.
+3. Click **Run workflow** and select which platforms to build.
+4. Download generated artifacts from the workflow run:
+   - `windows-release`
+   - `macos-release`
+   - `linux-release`
+   - `android-release`
+
 ## OAuth setup
 
 You must configure OAuth credentials in the respective consoles:
