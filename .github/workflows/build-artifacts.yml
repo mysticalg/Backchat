@@ -26,7 +26,7 @@ on:
 
 jobs:
   build-windows:
-    if: ${{ inputs.build_windows && hashFiles('windows/CMakeLists.txt') != '' }}
+    if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -50,7 +50,7 @@ jobs:
           path: build/windows/x64/runner/Release/**
 
   build-macos:
-    if: ${{ inputs.build_macos && hashFiles('macos/Runner.xcodeproj/project.pbxproj') != '' }}
+    if: ${{ inputs.build_macos }}
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -74,7 +74,7 @@ jobs:
           path: build/macos/Build/Products/Release/**
 
   build-linux:
-    if: ${{ inputs.build_linux && hashFiles('linux/CMakeLists.txt') != '' }}
+    if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -103,7 +103,7 @@ jobs:
           path: build/linux/x64/release/bundle/**
 
   build-android:
-    if: ${{ inputs.build_android && hashFiles('android/app/build.gradle*') != '' }}
+    if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
