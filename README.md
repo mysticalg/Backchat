@@ -94,6 +94,15 @@ To run it:
    - `linux-release`
    - `android-release`
 
+## OpenAI parameter compatibility note
+
+If you integrate OpenAI prompt generation, avoid the legacy `max_tokens` field when calling newer OpenAI APIs.
+
+- Use `max_output_tokens` with the **Responses API** (`/v1/responses`).
+- Use `max_completion_tokens` with **Chat Completions** (`/v1/chat/completions`) for models that require it.
+
+Using `max_tokens` on these routes can return HTTP 400 with `Unsupported parameter: max_tokens`.
+
 ## OAuth setup
 
 You must configure OAuth credentials in the respective consoles:

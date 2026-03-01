@@ -14,6 +14,7 @@ dependencies:
   google_sign_in: ^6.2.1
   flutter_facebook_auth: ^7.0.0
   tray_manager: ^0.2.3
+  http: ^1.2.1
 
 flutter:
   uses-material-design: true
