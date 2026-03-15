@@ -117,3 +117,30 @@ Then wire runtime secrets through platform-specific config files.
 
 Backchat tracks user-selected status (`online`, `offline`, `busy`) and can map provider presence where API access exists.
 
+## Direct computer-to-computer messaging (P2P)
+
+Short answer: **Flutter can do P2P-capable apps**, but Flutter itself is just the UI/runtime layer.
+
+- This scaffold currently has an in-memory `MessagingService` for demo behavior and does **not** include internet transport yet.
+- Real-world chat apps usually still need at least a lightweight backend for:
+  - identity/account lookup
+  - key directory / pre-key bundles
+  - push notification wakeups (mobile)
+  - offline message queueing
+  - NAT/firewall traversal signaling
+- True direct device-to-device delivery is possible for some peers (for example using WebRTC data channels), but many networks block inbound direct connections without relay fallback.
+
+### Practical architecture options
+
+1. **Server-routed E2EE (most common)**
+   - Encrypted on sender device, decrypted on receiver device.
+   - Server only routes ciphertext and metadata.
+2. **Hybrid P2P + relay fallback**
+   - Attempt direct channel first.
+   - Fall back to TURN/relay when peers cannot connect directly.
+3. **LAN-only direct mode**
+   - Works well on same local network.
+   - Limited for internet-wide reliability.
+
+If your goal is "no third party can read messages," option 1 already achieves that with solid end-to-end encryption.
+If your goal is "no middlebox at all," expect reduced reliability unless both peers are on friendly networks.
