@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -119,15 +120,27 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     });
   }
 
+  /// Binds message metadata into AES-GCM authenticated data so that encrypted
+  /// payloads cannot be replayed with a different sender/receiver identity.
+  List<int> _buildMessageAad({required String fromUserId, required String toUserId}) {
+    return utf8.encode('$fromUserId|$toUserId');
+  }
+
   Future<void> _sendEncryptedMessage() async {
     if (_currentUser == null || _selectedContact == null || _sharedSecret == null) return;
 
     final String clearText = _messageController.text.trim();
     if (clearText.isEmpty) return;
 
+    final List<int> aad = _buildMessageAad(
+      fromUserId: _currentUser!.id,
+      toUserId: _selectedContact!.id,
+    );
+
     final String cipherText = await _encryptionService.encryptText(
       plainText: clearText,
       sharedSecret: _sharedSecret!,
+      associatedData: aad,
     );
 
     final ChatMessage message = ChatMessage(
@@ -141,6 +154,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     final String decrypted = await _encryptionService.decryptText(
       encodedPayload: cipherText,
       sharedSecret: _sharedSecret!,
+      associatedData: aad,
     );
 
     setState(() {
@@ -246,9 +260,13 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                 ),
               ),
               const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _sendEncryptedMessage,
-                child: const Text('Send'),
+              Tooltip(
+                message: 'Send message with end-to-end encryption',
+                child: FilledButton.icon(
+                  onPressed: _sendEncryptedMessage,
+                  icon: const Icon(Icons.lock),
+                  label: const Text('Send secure'),
+                ),
               ),
             ],
           ),
