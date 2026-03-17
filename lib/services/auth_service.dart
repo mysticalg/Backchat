@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_user.dart';
 import 'backchat_api_service.dart';
@@ -65,9 +65,9 @@ class AuthService {
   static const String _usernameAccountsStorageKey = 'username_accounts_v1';
   static final RegExp _usernamePattern = RegExp(r'^[a-zA-Z0-9_]{3,24}$');
   static final RegExp _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+  static const Duration _oauthPollInterval = Duration(seconds: 2);
+  static const int _oauthMaxPollAttempts = 90;
 
-  final GoogleSignIn _googleSignIn =
-      GoogleSignIn(scopes: <String>['email', 'profile']);
   final BackchatApiClient _apiService;
 
   bool get isRemoteApiEnabled => _apiService.isConfigured;
@@ -257,31 +257,34 @@ class AuthService {
   }
 
   Future<AppUser?> signInWithGoogle() async {
-    try {
-      final GoogleSignInAccount? account = await _googleSignIn.signIn();
-      if (account == null) return null;
-
-      return AppUser(
-        id: account.id,
-        displayName: account.displayName ?? 'Google User',
-        avatarUrl: account.photoUrl ?? '',
-        provider: AuthProvider.google,
-      );
-    } catch (_) {
-      if (!_isDesktop) rethrow;
-      return _desktopDemoUser(provider: AuthProvider.google);
-    }
+    return _signInWithSocialProvider('google');
   }
 
   Future<AppUser?> signInWithFacebook() async {
-    return _desktopDemoUser(provider: AuthProvider.facebook);
+    return _signInWithSocialProvider('facebook');
+  }
+
+  Future<AppUser?> signInWithX() async {
+    return _signInWithSocialProvider('x');
+  }
+
+  Future<String?> socialOAuthStartupWarning() async {
+    if (!_apiService.isConfigured) {
+      return 'Social login needs BACKCHAT_API_BASE_URL configured in this build.';
+    }
+    try {
+      final SocialOAuthProbeResult probe = await _apiService.probeSocialOAuth();
+      if (probe.oauthReady) return null;
+      return probe.message;
+    } on BackchatApiException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'Could not verify social login readiness.';
+    }
   }
 
   Future<void> signOut(AppUser user) async {
     await _apiService.clearToken();
-    if (user.provider == AuthProvider.google) {
-      await _googleSignIn.signOut();
-    }
   }
 
   Future<List<_UsernameAccount>> _readUsernameAccounts() async {
@@ -324,27 +327,90 @@ class AuthService {
   AppUser _apiUserToAppUser(Map<String, dynamic> json) {
     final String username =
         json['username']?.toString() ?? json['displayName']?.toString() ?? '';
+    final String displayName =
+        json['displayName']?.toString() ?? json['username']?.toString() ?? '';
     final String normalizedUsername = username.toLowerCase();
+    final String providerName =
+        json['provider']?.toString() ?? AuthProvider.username.name;
+    final AuthProvider provider = AuthProvider.values.firstWhere(
+      (AuthProvider value) => value.name == providerName,
+      orElse: () => AuthProvider.username,
+    );
     return AppUser(
       id: json['id']?.toString() ?? 'username:$normalizedUsername',
-      displayName: username,
+      displayName: displayName,
       avatarUrl: json['avatarUrl']?.toString() ?? '',
-      provider: AuthProvider.username,
+      provider: provider,
       status: PresenceStatus.online,
     );
   }
 
-  bool get _isDesktop =>
-      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  Future<AppUser?> _signInWithSocialProvider(String provider) async {
+    if (!_apiService.isConfigured) {
+      throw const BackchatApiException(
+        status: 'api_not_configured',
+        message:
+            'Social login requires BACKCHAT_API_BASE_URL in this build.',
+      );
+    }
+    final SocialOAuthStartResult start =
+        await _apiService.startSocialOAuth(provider);
+    final Uri uri = Uri.parse(start.authorizationUrl);
+    final bool launched = await _launchBrowser(uri);
+    if (!launched) {
+      throw const BackchatApiException(
+        status: 'oauth_launch_failed',
+        message: 'Could not open browser for OAuth.',
+      );
+    }
 
-  AppUser _desktopDemoUser({required AuthProvider provider}) {
-    final String name = provider == AuthProvider.google
-        ? 'Google Demo User'
-        : 'Facebook Demo User';
-    final String id = provider == AuthProvider.google
-        ? 'demo-google-user'
-        : 'demo-facebook-user';
-    return AppUser(
-        id: id, displayName: name, avatarUrl: '', provider: provider);
+    for (int i = 0; i < _oauthMaxPollAttempts; i++) {
+      await Future<void>.delayed(_oauthPollInterval);
+      final SocialOAuthPollResult poll =
+          await _apiService.pollSocialOAuth(start.state);
+      if (poll.status == 'authorized') {
+        return poll.user;
+      }
+      if (poll.status == 'failed' || poll.status == 'expired') {
+        throw BackchatApiException(
+          status: poll.status,
+          message: poll.error ?? 'OAuth sign-in failed.',
+        );
+      }
+      if (poll.status == 'pending') {
+        continue;
+      }
+      throw BackchatApiException(
+        status: 'oauth_unexpected_status',
+        message: 'Unexpected OAuth poll status: ${poll.status}',
+      );
+    }
+
+    throw const BackchatApiException(
+      status: 'oauth_timeout',
+      message: 'OAuth login timed out before completion.',
+    );
   }
+
+  Future<bool> _launchBrowser(Uri uri) async {
+    final bool launched =
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (launched) return true;
+
+    // Windows fallback in case url_launcher cannot resolve default browser.
+    if (!kIsWeb && Platform.isWindows) {
+      try {
+        await Process.start(
+          'cmd',
+          <String>['/c', 'start', '', uri.toString()],
+          runInShell: true,
+        );
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
+  }
+
 }

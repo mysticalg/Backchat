@@ -9,6 +9,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'models/app_user.dart';
 import 'models/chat_message.dart';
 import 'services/auth_service.dart';
+import 'services/backchat_api_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
 import 'services/messaging_service.dart';
@@ -58,6 +59,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   final List<String> _conversation = <String>[];
   bool _isAuthBusy = false;
   bool _isInviteBusy = false;
+  bool _isCheckingSocialAuth = false;
+  String? _socialAuthWarning;
 
   late final SimpleKeyPair _localKeyPair;
   SimplePublicKey? _remotePublicKey;
@@ -68,6 +71,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     super.initState();
     _bootstrapCrypto();
     _configureTrayIfDesktop();
+    _runSocialAuthStartupCheck();
   }
 
   @override
@@ -142,27 +146,34 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         case UsernameSignInStatus.signedIn:
           setState(() => _currentUser = result.user);
           await _loadContacts();
+          break;
         case UsernameSignInStatus.created:
           setState(() => _currentUser = result.user);
           await _loadContacts();
           _showAuthMessage(
               'Username created and linked to your recovery email.');
+          break;
         case UsernameSignInStatus.invalidUsername:
           _showAuthMessage(
               'Choose 3-24 characters: letters, numbers, or underscore.');
+          break;
         case UsernameSignInStatus.usernameNeedsRecoveryEmail:
           _showAuthMessage(
               'That username is available. Add a recovery email to claim it.');
+          break;
         case UsernameSignInStatus.invalidRecoveryEmail:
           _showAuthMessage('Enter a valid recovery email address.');
+          break;
         case UsernameSignInStatus.recoveryEmailAlreadyInUse:
           _showAuthMessage(
             'That email is already linked to ${result.linkedUsername}. Use recovery below.',
           );
+          break;
         case UsernameSignInStatus.serverUnavailable:
           _showAuthMessage(
             'Could not reach the server. Falling back to local mode.',
           );
+          break;
       }
     } catch (_) {
       _showAuthMessage('Sign in failed unexpectedly. Please try again.');
@@ -171,6 +182,71 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         setState(() => _isAuthBusy = false);
       }
     }
+  }
+
+  Future<void> _runSocialAuthStartupCheck() async {
+    if (!_authService.isRemoteApiEnabled) {
+      return;
+    }
+    setState(() => _isCheckingSocialAuth = true);
+    final String? warning = await _authService.socialOAuthStartupWarning();
+    if (!mounted) return;
+    setState(() {
+      _socialAuthWarning = warning;
+      _isCheckingSocialAuth = false;
+    });
+  }
+
+  Future<void> _continueWithSocial({
+    required Future<AppUser?> Function() signIn,
+    required String providerLabel,
+  }) async {
+    if (_isAuthBusy) return;
+
+    setState(() => _isAuthBusy = true);
+    try {
+      _showAuthMessage(
+        'Opening $providerLabel login in your browser. Complete login there, then return here.',
+      );
+      final AppUser? user = await signIn();
+      if (user == null) {
+        _showAuthMessage('$providerLabel login was cancelled.');
+        return;
+      }
+      setState(() => _currentUser = user);
+      await _loadContacts();
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage(
+        '$providerLabel login failed or is not configured yet.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isAuthBusy = false);
+      }
+    }
+  }
+
+  Future<void> _continueWithGoogle() {
+    return _continueWithSocial(
+      signIn: _authService.signInWithGoogle,
+      providerLabel: 'Google',
+    );
+  }
+
+  Future<void> _continueWithFacebook() {
+    return _continueWithSocial(
+      signIn: _authService.signInWithFacebook,
+      providerLabel: 'Facebook',
+    );
+  }
+
+  Future<void> _continueWithX() {
+    return _continueWithSocial(
+      signIn: _authService.signInWithX,
+      providerLabel: 'X',
+    );
   }
 
   Future<void> _recoverUsername() async {
@@ -202,20 +278,26 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           await _loadContacts();
           _inviteUsernameController.clear();
           _showAuthMessage('Added ${result.contact?.displayName} to contacts.');
+          break;
         case InviteByUsernameStatus.alreadyContact:
           _showAuthMessage(
               '${result.contact?.displayName} is already in your contacts.');
+          break;
         case InviteByUsernameStatus.selfInvite:
           _showAuthMessage('You cannot add your own username as a contact.');
+          break;
         case InviteByUsernameStatus.notFound:
           _showAuthMessage('No account found with that username.');
+          break;
         case InviteByUsernameStatus.invalidUsername:
           _showAuthMessage(
               'Enter a valid username (3-24 letters/numbers/underscore).');
+          break;
         case InviteByUsernameStatus.serverUnavailable:
           _showAuthMessage(
             'Invite service is currently unavailable. Please try again.',
           );
+          break;
       }
     } catch (_) {
       _showAuthMessage('Invite failed unexpectedly. Please try again.');
@@ -295,76 +377,138 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 460),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Username sign in',
-                style: Theme.of(context).textTheme.headlineSmall,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'No password needed. If the username is new, add a recovery email to claim it.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _usernameController,
-                decoration: const InputDecoration(
-                  labelText: 'Username',
-                  hintText: 'e.g. crypto_owl',
-                  border: OutlineInputBorder(),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  'Sign in',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                  textAlign: TextAlign.center,
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _usernameRecoveryEmailController,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Recovery email (required for new usernames)',
-                  border: OutlineInputBorder(),
+                const SizedBox(height: 8),
+                const Text(
+                  'Choose username, Google, Facebook, or X to start chatting.',
+                  textAlign: TextAlign.center,
                 ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _isAuthBusy ? null : _continueWithUsername,
-                icon: _isAuthBusy
-                    ? const SizedBox(
+                if (!_authService.isRemoteApiEnabled) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Social login needs BACKCHAT_API_BASE_URL configured in this build.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (_authService.isRemoteApiEnabled && _isCheckingSocialAuth)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Center(
+                      child: SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.login),
-                label: Text(_isAuthBusy ? 'Working...' : 'Continue'),
-              ),
-              const SizedBox(height: 20),
-              const Divider(),
-              const SizedBox(height: 8),
-              Text(
-                'Recover username by email',
-                style: Theme.of(context).textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _recoveryEmailController,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Recovery email',
-                  border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                if (_socialAuthWarning != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _socialAuthWarning!,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _isAuthBusy ? null : _continueWithGoogle,
+                  icon: const Icon(Icons.g_mobiledata),
+                  label: const Text('Continue with Google'),
                 ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _recoverUsername,
-                icon: const Icon(Icons.mail),
-                label: const Text('Recover username'),
-              ),
-            ],
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: _isAuthBusy ? null : _continueWithFacebook,
+                  icon: const Icon(Icons.facebook),
+                  label: const Text('Continue with Facebook'),
+                ),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: _isAuthBusy ? null : _continueWithX,
+                  icon: const Icon(Icons.alternate_email),
+                  label: const Text('Continue with X'),
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 8),
+                Text(
+                  'Or use username',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _usernameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Username',
+                    hintText: 'e.g. crypto_owl',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _usernameRecoveryEmailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    labelText: 'Recovery email (required for new usernames)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _isAuthBusy ? null : _continueWithUsername,
+                  icon: _isAuthBusy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.login),
+                  label: Text(_isAuthBusy ? 'Working...' : 'Continue'),
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 8),
+                Text(
+                  'Recover username by email',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _recoveryEmailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    labelText: 'Recovery email',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: _recoverUsername,
+                  icon: const Icon(Icons.mail),
+                  label: const Text('Recover username'),
+                ),
+              ],
+            ),
           ),
         ),
       ),

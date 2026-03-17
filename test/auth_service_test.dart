@@ -22,6 +22,16 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<SocialOAuthProbeResult> probeSocialOAuth() async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
   Future<String?> recoverUsernameForEmail(String recoveryEmail) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -31,6 +41,11 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
     required String username,
     required String recoveryEmail,
   }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<SocialOAuthStartResult> startSocialOAuth(String provider) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
 }

@@ -10,6 +10,10 @@ bc_json([
     'endpoints' => [
         'health' => '/health.php',
         'auth' => '/auth_username.php',
+        'oauthStart' => '/auth_oauth_start.php',
+        'oauthPoll' => '/auth_oauth_poll.php',
+        'oauthCallback' => '/auth_oauth_callback.php',
+        'oauthProbe' => '/oauth_probe.php',
         'recover' => '/recover_username.php',
         'contacts' => '/contacts.php',
         'invite' => '/invite_by_username.php',

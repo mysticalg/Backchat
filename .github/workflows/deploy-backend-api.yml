@@ -1,0 +1,44 @@
+name: Deploy Backend API
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: Type DEPLOY to confirm production backend deployment
+        required: true
+        default: ""
+
+jobs:
+  deploy-backend-api:
+    if: ${{ inputs.confirm_production == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          FTP_SERVER: ${{ secrets.BACKEND_FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.BACKEND_FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.BACKEND_FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ secrets.BACKEND_FTP_SERVER_DIR }}
+        run: |
+          test -n "$FTP_SERVER" || (echo "Missing secret BACKEND_FTP_SERVER" && exit 1)
+          test -n "$FTP_USERNAME" || (echo "Missing secret BACKEND_FTP_USERNAME" && exit 1)
+          test -n "$FTP_PASSWORD" || (echo "Missing secret BACKEND_FTP_PASSWORD" && exit 1)
+          test -n "$FTP_SERVER_DIR" || (echo "Missing secret BACKEND_FTP_SERVER_DIR" && exit 1)
+
+      - name: Deploy backend/api via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.BACKEND_FTP_SERVER }}
+          username: ${{ secrets.BACKEND_FTP_USERNAME }}
+          password: ${{ secrets.BACKEND_FTP_PASSWORD }}
+          local-dir: ./backend/api/
+          server-dir: ${{ secrets.BACKEND_FTP_SERVER_DIR }}
+          protocol: ftp
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            config.php

@@ -10,7 +10,7 @@ Backchat is a cross-platform encrypted messaging app scaffold targeting:
 
 It includes:
 
-- OAuth sign-in with Google and Facebook
+- Browser OAuth sign-in for Google, Facebook, and X
 - Profile import (avatar + display name)
 - Contact discovery from providers (where APIs allow)
 - End-to-end encryption primitives for messages
@@ -94,14 +94,45 @@ To run it:
    - `linux-release`
    - `android-release`
 
+## GitHub Actions backend deploy
+
+This repo also includes a manual deploy workflow at `.github/workflows/deploy-backend-api.yml` for pushing `backend/api/*` live.
+
+Set these repository secrets first:
+
+- `BACKEND_FTP_SERVER` (for example `ftpupload.net`)
+- `BACKEND_FTP_USERNAME`
+- `BACKEND_FTP_PASSWORD`
+- `BACKEND_FTP_SERVER_DIR` (for example `/htdocs/backchat-api/`)
+
+Run it:
+
+1. Push your changes to GitHub.
+2. Open **Actions** → **Deploy Backend API**.
+3. Click **Run workflow**.
+4. In the confirmation box, type `DEPLOY`.
+
 ## OAuth setup
 
 You must configure OAuth credentials in the respective consoles:
 
 - Google Cloud Console (OAuth client IDs)
 - Meta for Developers (Facebook Login)
+- X Developer Portal (OAuth app keys)
 
 Then wire runtime secrets through platform-specific config files.
+
+For the current implementation, social login runs through the Backchat PHP API:
+
+1. Fill OAuth keys in `backend/api/config.php` (copied from `config.php.example`).
+2. Set each provider redirect URI to:
+   - `https://<your-api-host>/backchat-api/auth_oauth_callback.php`
+3. Re-run `POST /backchat-api/setup.php` once to create OAuth tables.
+4. Run Flutter with your API base URL:
+
+```bash
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://<your-api-host>/backchat-api
+```
 
 ## Security model
 

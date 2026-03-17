@@ -13,4 +13,15 @@ return [
     'db_pass' => 'CHANGE_ME',
     // Set a long random value before first setup call.
     'setup_key' => 'CHANGE_ME_RANDOM_SETUP_KEY',
+    // Optional but required for social OAuth.
+    // Redirect URI should point to /auth_oauth_callback.php on your deployed API.
+    'google_oauth_client_id' => '',
+    'google_oauth_client_secret' => '',
+    'google_oauth_redirect_uri' => '',
+    'facebook_oauth_client_id' => '',
+    'facebook_oauth_client_secret' => '',
+    'facebook_oauth_redirect_uri' => '',
+    'x_oauth_client_id' => '',
+    'x_oauth_client_secret' => '',
+    'x_oauth_redirect_uri' => '',
 ];

@@ -22,6 +22,48 @@ class BackchatApiException implements Exception {
       'BackchatApiException(status: $status, message: $message)';
 }
 
+class SocialOAuthStartResult {
+  const SocialOAuthStartResult({
+    required this.state,
+    required this.authorizationUrl,
+  });
+
+  final String state;
+  final String authorizationUrl;
+}
+
+class SocialOAuthPollResult {
+  const SocialOAuthPollResult({
+    required this.status,
+    this.user,
+    this.error,
+  });
+
+  final String status;
+  final AppUser? user;
+  final String? error;
+}
+
+class SocialOAuthProbeResult {
+  const SocialOAuthProbeResult({
+    required this.oauthReady,
+    required this.message,
+    required this.curlAvailable,
+    required this.schemaReady,
+    required this.googleConfigured,
+    required this.facebookConfigured,
+    required this.xConfigured,
+  });
+
+  final bool oauthReady;
+  final String message;
+  final bool curlAvailable;
+  final bool schemaReady;
+  final bool googleConfigured;
+  final bool facebookConfigured;
+  final bool xConfigured;
+}
+
 abstract class BackchatApiClient {
   bool get isConfigured;
 
@@ -35,6 +77,12 @@ abstract class BackchatApiClient {
   Future<List<AppUser>> fetchContacts();
 
   Future<Map<String, dynamic>> inviteByUsername(String username);
+
+  Future<SocialOAuthStartResult> startSocialOAuth(String provider);
+
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state);
+
+  Future<SocialOAuthProbeResult> probeSocialOAuth();
 
   Future<void> clearToken();
 }
@@ -102,6 +150,86 @@ class BackchatApiService implements BackchatApiClient {
       '/invite_by_username.php',
       <String, dynamic>{'username': username},
       requiresAuth: true,
+    );
+  }
+
+  @override
+  Future<SocialOAuthStartResult> startSocialOAuth(String provider) async {
+    final Map<String, dynamic> payload = await _postJson(
+      '/auth_oauth_start.php',
+      <String, dynamic>{'provider': provider},
+      requiresAuth: false,
+    );
+    final String state = payload['state']?.toString() ?? '';
+    final String authorizationUrl = payload['authorizationUrl']?.toString() ?? '';
+    if (state.isEmpty || authorizationUrl.isEmpty) {
+      throw const BackchatApiException(
+        status: 'oauth_start_invalid',
+        message: 'OAuth start response is missing fields.',
+      );
+    }
+    return SocialOAuthStartResult(
+      state: state,
+      authorizationUrl: authorizationUrl,
+    );
+  }
+
+  @override
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state) async {
+    final Map<String, dynamic> payload = await _postJson(
+      '/auth_oauth_poll.php',
+      <String, dynamic>{'state': state},
+      requiresAuth: false,
+    );
+    final String status = payload['status']?.toString() ?? '';
+    if (status == 'authorized') {
+      final String token = payload['token']?.toString() ?? '';
+      if (token.isNotEmpty) {
+        await _saveToken(token);
+      }
+      final AppUser? user = payload['user'] is Map<String, dynamic>
+          ? _appUserFromApiMap(payload['user'] as Map<String, dynamic>)
+          : null;
+      return SocialOAuthPollResult(status: status, user: user);
+    }
+
+    return SocialOAuthPollResult(
+      status: status,
+      error: payload['error']?.toString(),
+    );
+  }
+
+  @override
+  Future<SocialOAuthProbeResult> probeSocialOAuth() async {
+    final Map<String, dynamic> payload = await _getJson(
+      '/oauth_probe.php',
+      requiresAuth: false,
+    );
+    final Map<String, dynamic> runtime =
+        payload['runtime'] is Map<String, dynamic>
+            ? payload['runtime'] as Map<String, dynamic>
+            : <String, dynamic>{};
+    final Map<String, dynamic> providers =
+        payload['providers'] is Map<String, dynamic>
+            ? payload['providers'] as Map<String, dynamic>
+            : <String, dynamic>{};
+
+    bool configuredFor(String provider) {
+      final Object? row = providers[provider];
+      if (row is Map<String, dynamic>) {
+        return row['configured'] == true;
+      }
+      return false;
+    }
+
+    return SocialOAuthProbeResult(
+      oauthReady: payload['oauthReady'] == true,
+      message: payload['message']?.toString() ?? 'OAuth probe complete.',
+      curlAvailable: runtime['curlAvailable'] == true,
+      schemaReady: runtime['schemaReady'] == true,
+      googleConfigured: configuredFor('google'),
+      facebookConfigured: configuredFor('facebook'),
+      xConfigured: configuredFor('x'),
     );
   }
 
@@ -193,9 +321,17 @@ class BackchatApiService implements BackchatApiClient {
 
     Map<String, dynamic> decoded = <String, dynamic>{};
     if (response.body.isNotEmpty) {
-      final Object? parsed = jsonDecode(response.body);
-      if (parsed is Map<String, dynamic>) {
-        decoded = parsed;
+      try {
+        final Object? parsed = jsonDecode(response.body);
+        if (parsed is Map<String, dynamic>) {
+          decoded = parsed;
+        }
+      } on FormatException {
+        throw const BackchatApiException(
+          status: 'invalid_api_response',
+          message:
+              'API did not return JSON. Check for host anti-bot/interstitial protection.',
+        );
       }
     }
 
@@ -225,12 +361,20 @@ class BackchatApiService implements BackchatApiClient {
   AppUser _appUserFromApiMap(Map<String, dynamic> json) {
     final String username =
         json['username']?.toString() ?? json['displayName']?.toString() ?? '';
+    final String displayName =
+        json['displayName']?.toString() ?? json['username']?.toString() ?? '';
     final String normalizedUsername = username.toLowerCase();
+    final String providerName =
+        json['provider']?.toString() ?? AuthProvider.username.name;
+    final AuthProvider provider = AuthProvider.values.firstWhere(
+      (AuthProvider value) => value.name == providerName,
+      orElse: () => AuthProvider.username,
+    );
     return AppUser(
       id: json['id']?.toString() ?? 'username:$normalizedUsername',
-      displayName: username,
+      displayName: displayName,
       avatarUrl: json['avatarUrl']?.toString() ?? '',
-      provider: AuthProvider.username,
+      provider: provider,
       status: PresenceStatus.online,
     );
   }

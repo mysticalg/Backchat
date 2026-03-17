@@ -23,6 +23,51 @@ CREATE TABLE IF NOT EXISTS sessions (
     CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS oauth_identities (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL,
+    provider ENUM('google', 'facebook', 'x') NOT NULL,
+    provider_user_id VARCHAR(128) NOT NULL,
+    provider_username VARCHAR(128) NULL,
+    display_name VARCHAR(255) NULL,
+    email VARCHAR(255) NULL,
+    avatar_url TEXT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NULL,
+    token_type VARCHAR(32) NULL,
+    scope TEXT NULL,
+    token_expires_at DATETIME NULL,
+    raw_profile_json MEDIUMTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_oauth_provider_user (provider, provider_user_id),
+    UNIQUE KEY uniq_oauth_user_provider (user_id, provider),
+    KEY idx_oauth_user_id (user_id),
+    CONSTRAINT fk_oauth_identity_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS oauth_pending_states (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    provider ENUM('google', 'facebook', 'x') NOT NULL,
+    state VARCHAR(128) NOT NULL,
+    code_verifier VARCHAR(256) NOT NULL,
+    status ENUM('pending', 'completed', 'failed') NOT NULL DEFAULT 'pending',
+    error_code VARCHAR(64) NULL,
+    user_id BIGINT UNSIGNED NULL,
+    session_token TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME NULL,
+    expires_at DATETIME NOT NULL,
+    consumed_at DATETIME NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_oauth_state (state),
+    KEY idx_oauth_pending_provider (provider),
+    KEY idx_oauth_pending_status (status),
+    KEY idx_oauth_pending_user_id (user_id),
+    CONSTRAINT fk_oauth_pending_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS contacts (
     user_id BIGINT UNSIGNED NOT NULL,
     contact_user_id BIGINT UNSIGNED NOT NULL,
