@@ -327,10 +327,9 @@ class BackchatApiService implements BackchatApiClient {
           decoded = parsed;
         }
       } on FormatException {
-        throw const BackchatApiException(
+        throw BackchatApiException(
           status: 'invalid_api_response',
-          message:
-              'API did not return JSON. Check for host anti-bot/interstitial protection.',
+          message: _nonJsonApiResponseMessage(uri, response),
         );
       }
     }
@@ -343,6 +342,32 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
     return decoded;
+  }
+
+  String _nonJsonApiResponseMessage(Uri uri, http.Response response) {
+    final String body = response.body;
+    final String contentType = response.headers['content-type']?.toLowerCase() ?? '';
+
+    final String loweredBody = body.toLowerCase();
+    final bool looksLikeAntiBotInterstitial =
+        loweredBody.contains('/aes.js') ||
+        loweredBody.contains('site requires javascript to work') ||
+        loweredBody.contains('__test=');
+
+    if (looksLikeAntiBotInterstitial) {
+      return 'API returned a JavaScript anti-bot/interstitial page instead of JSON at $uri. '
+          'This host blocks app HTTP clients, so social login cannot start. '
+          'Move the API to a host without this protection.';
+    }
+
+    final bool looksLikeHtml =
+        contentType.contains('text/html') || loweredBody.trimLeft().startsWith('<');
+    if (looksLikeHtml) {
+      return 'API returned HTML instead of JSON at $uri. '
+          'Check BACKCHAT_API_BASE_URL and ensure it points to the PHP API folder (for example /backchat-api).';
+    }
+
+    return 'API did not return JSON at $uri.';
   }
 
   Future<void> _saveToken(String token) async {
