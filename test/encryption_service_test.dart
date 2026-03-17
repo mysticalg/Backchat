@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:backchat/services/encryption_service.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -10,7 +11,7 @@ void main() {
     encryptionService = EncryptionService();
   });
 
-  Future<(String, dynamic, List<int>)> _buildEncryptedPayload() async {
+  Future<(String, dynamic, List<int>)> buildEncryptedPayload() async {
     final local = await encryptionService.createIdentityKeyPair();
     final remote = await encryptionService.createIdentityKeyPair();
     final remotePublic = await remote.extractPublicKey();
@@ -29,7 +30,7 @@ void main() {
   }
 
   test('encryptText/decryptText round-trips plaintext', () async {
-    final (cipherText, secret, aad) = await _buildEncryptedPayload();
+    final (cipherText, secret, aad) = await buildEncryptedPayload();
 
     final clear = await encryptionService.decryptText(
       encodedPayload: cipherText,
@@ -41,7 +42,7 @@ void main() {
   });
 
   test('decryptText fails when associated data does not match', () async {
-    final (cipherText, secret, _) = await _buildEncryptedPayload();
+    final (cipherText, secret, _) = await buildEncryptedPayload();
 
     expect(
       () => encryptionService.decryptText(
@@ -54,7 +55,7 @@ void main() {
   });
 
   test('decryptText fails on invalid payload version', () async {
-    final (cipherText, secret, aad) = await _buildEncryptedPayload();
+    final (cipherText, secret, aad) = await buildEncryptedPayload();
     final bytes = base64Decode(cipherText);
     bytes[0] = 99;
     final tampered = base64Encode(bytes);

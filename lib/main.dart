@@ -47,8 +47,17 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   AppUser? _currentUser;
   List<AppUser> _contacts = <AppUser>[];
   AppUser? _selectedContact;
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _usernameRecoveryEmailController =
+      TextEditingController();
+  final TextEditingController _recoveryEmailController =
+      TextEditingController();
+  final TextEditingController _inviteUsernameController =
+      TextEditingController();
   final TextEditingController _messageController = TextEditingController();
   final List<String> _conversation = <String>[];
+  bool _isAuthBusy = false;
+  bool _isInviteBusy = false;
 
   late final SimpleKeyPair _localKeyPair;
   SimplePublicKey? _remotePublicKey;
@@ -61,9 +70,20 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _configureTrayIfDesktop();
   }
 
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _usernameRecoveryEmailController.dispose();
+    _recoveryEmailController.dispose();
+    _inviteUsernameController.dispose();
+    _messageController.dispose();
+    super.dispose();
+  }
+
   Future<void> _bootstrapCrypto() async {
     _localKeyPair = await _encryptionService.createIdentityKeyPair();
-    final SimpleKeyPair remotePair = await _encryptionService.createIdentityKeyPair();
+    final SimpleKeyPair remotePair =
+        await _encryptionService.createIdentityKeyPair();
     _remotePublicKey = await remotePair.extractPublicKey();
     _sharedSecret = await _encryptionService.deriveSharedSecret(
       localPrivateKey: _localKeyPair,
@@ -72,7 +92,10 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   }
 
   Future<void> _configureTrayIfDesktop() async {
-    if (kIsWeb || !(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) return;
+    if (kIsWeb ||
+        !(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
+      return;
+    }
 
     trayManager.addListener(this);
     await trayManager.setToolTip('Backchat');
@@ -90,27 +113,117 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
 
   Future<void> _loadContacts() async {
     if (_currentUser == null) return;
-    final List<AppUser> contacts = await _contactsService.pullContactsFor(_currentUser!);
+    final List<AppUser> contacts =
+        await _contactsService.pullContactsFor(_currentUser!);
     setState(() {
       _contacts = contacts;
       _selectedContact = contacts.isNotEmpty ? contacts.first : null;
     });
   }
 
-  Future<void> _signInGoogle() async {
-    final AppUser? user = await _authService.signInWithGoogle();
-    if (user == null) return;
-
-    setState(() => _currentUser = user);
-    await _loadContacts();
+  void _showAuthMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _signInFacebook() async {
-    final AppUser? user = await _authService.signInWithFacebook();
-    if (user == null) return;
+  Future<void> _continueWithUsername() async {
+    if (_isAuthBusy) return;
 
-    setState(() => _currentUser = user);
-    await _loadContacts();
+    setState(() => _isAuthBusy = true);
+    try {
+      final UsernameSignInResult result =
+          await _authService.signInOrCreateWithUsername(
+        username: _usernameController.text,
+        recoveryEmail: _usernameRecoveryEmailController.text,
+      );
+
+      switch (result.status) {
+        case UsernameSignInStatus.signedIn:
+          setState(() => _currentUser = result.user);
+          await _loadContacts();
+        case UsernameSignInStatus.created:
+          setState(() => _currentUser = result.user);
+          await _loadContacts();
+          _showAuthMessage(
+              'Username created and linked to your recovery email.');
+        case UsernameSignInStatus.invalidUsername:
+          _showAuthMessage(
+              'Choose 3-24 characters: letters, numbers, or underscore.');
+        case UsernameSignInStatus.usernameNeedsRecoveryEmail:
+          _showAuthMessage(
+              'That username is available. Add a recovery email to claim it.');
+        case UsernameSignInStatus.invalidRecoveryEmail:
+          _showAuthMessage('Enter a valid recovery email address.');
+        case UsernameSignInStatus.recoveryEmailAlreadyInUse:
+          _showAuthMessage(
+            'That email is already linked to ${result.linkedUsername}. Use recovery below.',
+          );
+        case UsernameSignInStatus.serverUnavailable:
+          _showAuthMessage(
+            'Could not reach the server. Falling back to local mode.',
+          );
+      }
+    } catch (_) {
+      _showAuthMessage('Sign in failed unexpectedly. Please try again.');
+    } finally {
+      if (mounted) {
+        setState(() => _isAuthBusy = false);
+      }
+    }
+  }
+
+  Future<void> _recoverUsername() async {
+    final String? username = await _authService
+        .recoverUsernameForEmail(_recoveryEmailController.text);
+    if (username == null) {
+      _showAuthMessage('No username found for that email.');
+      return;
+    }
+
+    _usernameController.text = username;
+    _showAuthMessage('Recovered username: $username');
+  }
+
+  Future<void> _inviteByUsername() async {
+    if (_currentUser == null || _isInviteBusy) return;
+
+    setState(() => _isInviteBusy = true);
+    try {
+      final InviteByUsernameResult result =
+          await _contactsService.inviteByUsername(
+        currentUser: _currentUser!,
+        username: _inviteUsernameController.text,
+        authService: _authService,
+      );
+
+      switch (result.status) {
+        case InviteByUsernameStatus.added:
+          await _loadContacts();
+          _inviteUsernameController.clear();
+          _showAuthMessage('Added ${result.contact?.displayName} to contacts.');
+        case InviteByUsernameStatus.alreadyContact:
+          _showAuthMessage(
+              '${result.contact?.displayName} is already in your contacts.');
+        case InviteByUsernameStatus.selfInvite:
+          _showAuthMessage('You cannot add your own username as a contact.');
+        case InviteByUsernameStatus.notFound:
+          _showAuthMessage('No account found with that username.');
+        case InviteByUsernameStatus.invalidUsername:
+          _showAuthMessage(
+              'Enter a valid username (3-24 letters/numbers/underscore).');
+        case InviteByUsernameStatus.serverUnavailable:
+          _showAuthMessage(
+            'Invite service is currently unavailable. Please try again.',
+          );
+      }
+    } catch (_) {
+      _showAuthMessage('Invite failed unexpectedly. Please try again.');
+    } finally {
+      if (mounted) {
+        setState(() => _isInviteBusy = false);
+      }
+    }
   }
 
   void _changeStatus(PresenceStatus status) {
@@ -122,12 +235,17 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
 
   /// Binds message metadata into AES-GCM authenticated data so that encrypted
   /// payloads cannot be replayed with a different sender/receiver identity.
-  List<int> _buildMessageAad({required String fromUserId, required String toUserId}) {
+  List<int> _buildMessageAad(
+      {required String fromUserId, required String toUserId}) {
     return utf8.encode('$fromUserId|$toUserId');
   }
 
   Future<void> _sendEncryptedMessage() async {
-    if (_currentUser == null || _selectedContact == null || _sharedSecret == null) return;
+    if (_currentUser == null ||
+        _selectedContact == null ||
+        _sharedSecret == null) {
+      return;
+    }
 
     final String clearText = _messageController.text.trim();
     if (clearText.isEmpty) return;
@@ -175,23 +293,80 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
 
   Widget _buildAuthView() {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          const Text('Sign in to start encrypted messaging'),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: _signInGoogle,
-            icon: const Icon(Icons.login),
-            label: const Text('Continue with Google'),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                'Username sign in',
+                style: Theme.of(context).textTheme.headlineSmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'No password needed. If the username is new, add a recovery email to claim it.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _usernameController,
+                decoration: const InputDecoration(
+                  labelText: 'Username',
+                  hintText: 'e.g. crypto_owl',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _usernameRecoveryEmailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Recovery email (required for new usernames)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _isAuthBusy ? null : _continueWithUsername,
+                icon: _isAuthBusy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.login),
+                label: Text(_isAuthBusy ? 'Working...' : 'Continue'),
+              ),
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 8),
+              Text(
+                'Recover username by email',
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _recoveryEmailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Recovery email',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _recoverUsername,
+                icon: const Icon(Icons.mail),
+                label: const Text('Recover username'),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          FilledButton.icon(
-            onPressed: _signInFacebook,
-            icon: const Icon(Icons.facebook),
-            label: const Text('Continue with Facebook'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -205,15 +380,20 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           Row(
             children: <Widget>[
               CircleAvatar(
-                backgroundImage: user.avatarUrl.isNotEmpty ? NetworkImage(user.avatarUrl) : null,
+                backgroundImage: user.avatarUrl.isNotEmpty
+                    ? NetworkImage(user.avatarUrl)
+                    : null,
                 child: user.avatarUrl.isEmpty ? const Icon(Icons.person) : null,
               ),
               const SizedBox(width: 12),
-              Expanded(child: Text(user.displayName, style: Theme.of(context).textTheme.titleMedium)),
+              Expanded(
+                  child: Text(user.displayName,
+                      style: Theme.of(context).textTheme.titleMedium)),
               DropdownButton<PresenceStatus>(
                 value: user.status,
                 items: PresenceStatus.values
-                    .map((PresenceStatus status) => DropdownMenuItem<PresenceStatus>(
+                    .map((PresenceStatus status) =>
+                        DropdownMenuItem<PresenceStatus>(
                           value: status,
                           child: Text(status.name),
                         ))
@@ -226,6 +406,34 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           ),
           const SizedBox(height: 12),
           Text('Contacts (${_contacts.length})'),
+          const SizedBox(height: 8),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: TextField(
+                  controller: _inviteUsernameController,
+                  decoration: const InputDecoration(
+                    hintText: 'Invite by username',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _isInviteBusy ? null : _inviteByUsername,
+                icon: _isInviteBusy
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.person_add),
+                label: const Text('Invite'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             children: _contacts

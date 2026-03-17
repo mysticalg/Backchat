@@ -1,0 +1,16 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * Copy this file to config.php on the server and fill in real credentials.
+ * Keep config.php out of source control.
+ */
+return [
+    'db_host' => 'sql109.infinityfree.com',
+    'db_port' => 3306,
+    'db_name' => 'if0_41385807_XXX',
+    'db_user' => 'if0_41385807',
+    'db_pass' => 'CHANGE_ME',
+    // Set a long random value before first setup call.
+    'setup_key' => 'CHANGE_ME_RANDOM_SETUP_KEY',
+];

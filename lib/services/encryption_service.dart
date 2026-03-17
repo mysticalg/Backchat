@@ -79,7 +79,8 @@ class EncryptionService {
     final int macStart = payload.length - _macLength;
 
     if (macStart <= cipherStart) {
-      throw const FormatException('Encrypted payload has invalid cipher/mac boundaries.');
+      throw const FormatException(
+          'Encrypted payload has invalid cipher/mac boundaries.');
     }
 
     final List<int> nonce = payload.sublist(nonceStart, cipherStart);

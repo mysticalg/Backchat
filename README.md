@@ -144,3 +144,20 @@ Short answer: **Flutter can do P2P-capable apps**, but Flutter itself is just th
 
 If your goal is "no third party can read messages," option 1 already achieves that with solid end-to-end encryption.
 If your goal is "no middlebox at all," expect reduced reliability unless both peers are on friendly networks.
+
+## Hosted API (username sync + invites)
+
+The app can use a hosted API for shared username accounts and contact invites.
+
+Run with:
+
+```bash
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://mysticalg.kesug.com/backchat-api
+```
+
+Server files are in `backend/api/`.
+
+> Note: InfinityFree may inject a JavaScript anti-bot interstitial for direct
+> API calls. Native app HTTP clients cannot execute that JavaScript, which
+> breaks JSON API calls. If this happens, move the API to a host without that
+> interstitial.

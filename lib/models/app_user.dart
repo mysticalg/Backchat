@@ -1,4 +1,4 @@
-enum AuthProvider { google, facebook }
+enum AuthProvider { username, google, facebook }
 
 enum PresenceStatus { online, offline, busy }
 
