@@ -147,19 +147,7 @@ jobs:
           aws elasticbeanstalk wait environment-updated \
             --environment-names "$EB_ENVIRONMENT_NAME"
 
-      - name: Verify environment health
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws elasticbeanstalk describe-environments \
-            --environment-names "$EB_ENVIRONMENT_NAME" \
-            --query 'Environments[0].[Status,Health,HealthStatus]' \
-            --output text
-          curl --fail --silent --show-error "$BACKEND_BASE_URL/health.php" | tee health-response.json
-          jq -e '.ok == true and .status == "healthy"' health-response.json > /dev/null
-
       - name: Run schema setup
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == 'true' }}
         shell: bash
         env:
           BACKCHAT_SETUP_KEY: ${{ secrets.BACKCHAT_SETUP_KEY }}
@@ -170,3 +158,21 @@ jobs:
             --data "{\"setupKey\":\"$BACKCHAT_SETUP_KEY\"}" \
             "$BACKEND_BASE_URL/setup.php" | tee setup-response.json
           jq -e '.ok == true and .status == "schema_ready"' setup-response.json > /dev/null
+
+      - name: Verify environment health
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENVIRONMENT_NAME" \
+            --query 'Environments[0].[Status,Health,HealthStatus]' \
+            --output text
+          curl --fail --silent --show-error "$BACKEND_BASE_URL/health.php" | tee health-response.json
+          jq -e '.ok == true and .status == "healthy" and .schemaReady == true' health-response.json > /dev/null
+
+      - name: Verify schema-dependent endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error "$BACKEND_BASE_URL/oauth_probe.php" | tee oauth-probe-response.json
+          jq -e '.ok == true and .runtime.schemaReady == true' oauth-probe-response.json > /dev/null

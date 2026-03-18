@@ -27,6 +27,15 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<PollMessagesResult> pollMessages({
+    int sinceId = 0,
+    int limit = 100,
+    required String currentUserId,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
   Future<SocialOAuthProbeResult> probeSocialOAuth() async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -40,6 +49,15 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<void> sendMessage({
+    required String toUsername,
+    required String cipherText,
+    String? clientMessageId,
   }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }

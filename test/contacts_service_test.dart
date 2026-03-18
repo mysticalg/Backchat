@@ -1,7 +1,73 @@
+import 'package:backchat/models/app_user.dart';
 import 'package:backchat/services/auth_service.dart';
+import 'package:backchat/services/backchat_api_service.dart';
 import 'package:backchat/services/contacts_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+class _DisabledApiClient implements BackchatApiClient {
+  @override
+  bool get isConfigured => false;
+
+  @override
+  Future<void> clearToken() async {}
+
+  @override
+  Future<List<AppUser>> fetchContacts() {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Map<String, dynamic>> inviteByUsername(String username) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<PollMessagesResult> pollMessages({
+    int sinceId = 0,
+    int limit = 100,
+    required String currentUserId,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SocialOAuthProbeResult> probeSocialOAuth() {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<String?> recoverUsernameForEmail(String recoveryEmail) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> sendMessage({
+    required String toUsername,
+    required String cipherText,
+    String? clientMessageId,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Map<String, dynamic>> signInOrCreateWithUsername({
+    required String username,
+    required String recoveryEmail,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SocialOAuthStartResult> startSocialOAuth(String provider) {
+    throw UnimplementedError();
+  }
+}
 
 void main() {
   late AuthService authService;
@@ -9,8 +75,8 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    authService = AuthService();
-    contactsService = ContactsService();
+    authService = AuthService(apiService: _DisabledApiClient());
+    contactsService = ContactsService(apiService: _DisabledApiClient());
   });
 
   test('invite by username adds an existing user to contacts', () async {

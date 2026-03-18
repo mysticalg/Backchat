@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:cryptography/cryptography.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'models/app_user.dart';
@@ -39,7 +40,11 @@ class BackchatHomePage extends StatefulWidget {
   State<BackchatHomePage> createState() => _BackchatHomePageState();
 }
 
-class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
+class _BackchatHomePageState extends State<BackchatHomePage>
+    with TrayListener {
+  static const Duration _messagePollInterval = Duration(seconds: 2);
+  static const String _plainTextTransportMode = 'plaintext_v1';
+
   final AuthService _authService = AuthService();
   final ContactsService _contactsService = ContactsService();
   final EncryptionService _encryptionService = EncryptionService();
@@ -60,10 +65,10 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   bool _isAuthBusy = false;
   bool _isInviteBusy = false;
   bool _isCheckingSocialAuth = false;
+  bool _isSyncingMessages = false;
   String? _socialAuthWarning;
+  Timer? _messagePollTimer;
 
-  late final SimpleKeyPair _localKeyPair;
-  SimplePublicKey? _remotePublicKey;
   SecretKey? _sharedSecret;
 
   @override
@@ -76,6 +81,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
 
   @override
   void dispose() {
+    _stopMessagePolling();
     _usernameController.dispose();
     _usernameRecoveryEmailController.dispose();
     _recoveryEmailController.dispose();
@@ -85,13 +91,15 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   }
 
   Future<void> _bootstrapCrypto() async {
-    _localKeyPair = await _encryptionService.createIdentityKeyPair();
+    final SimpleKeyPair localKeyPair =
+        await _encryptionService.createIdentityKeyPair();
     final SimpleKeyPair remotePair =
         await _encryptionService.createIdentityKeyPair();
-    _remotePublicKey = await remotePair.extractPublicKey();
+    final SimplePublicKey remotePublicKey = await remotePair.extractPublicKey();
+
     _sharedSecret = await _encryptionService.deriveSharedSecret(
-      localPrivateKey: _localKeyPair,
-      remotePublicKey: _remotePublicKey!,
+      localPrivateKey: localKeyPair,
+      remotePublicKey: remotePublicKey,
     );
   }
 
@@ -116,19 +124,211 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   }
 
   Future<void> _loadContacts() async {
-    if (_currentUser == null) return;
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    final String? previousSelectedId = _selectedContact?.id;
     final List<AppUser> contacts =
-        await _contactsService.pullContactsFor(_currentUser!);
+        await _contactsService.pullContactsFor(currentUser);
+
+    AppUser? selectedContact;
+    if (previousSelectedId != null) {
+      for (final AppUser contact in contacts) {
+        if (contact.id == previousSelectedId) {
+          selectedContact = contact;
+          break;
+        }
+      }
+    }
+    selectedContact ??= contacts.isNotEmpty ? contacts.first : null;
+
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
       _contacts = contacts;
-      _selectedContact = contacts.isNotEmpty ? contacts.first : null;
+      _selectedContact = selectedContact;
     });
+    await _refreshConversation();
   }
 
   void _showAuthMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _activateUserSession(AppUser user) async {
+    _stopMessagePolling();
+    _messagingService.reset();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _currentUser = user;
+      _conversation.clear();
+    });
+
+    await _loadContacts();
+    _startMessagePolling();
+    await _syncMessages(showErrors: false);
+  }
+
+  void _startMessagePolling() {
+    _messagePollTimer?.cancel();
+    _messagePollTimer = Timer.periodic(_messagePollInterval, (_) {
+      _syncMessages(showErrors: false);
+    });
+  }
+
+  void _stopMessagePolling() {
+    _messagePollTimer?.cancel();
+    _messagePollTimer = null;
+  }
+
+  Future<void> _syncMessages({required bool showErrors}) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null || _isSyncingMessages) {
+      return;
+    }
+
+    _isSyncingMessages = true;
+    try {
+      final List<ChatMessage> newMessages =
+          await _messagingService.syncIncoming(currentUser.id);
+      if (newMessages.isNotEmpty) {
+        await _refreshConversation();
+      }
+    } on BackchatApiException catch (e) {
+      if (showErrors) {
+        _showAuthMessage(e.message);
+      }
+    } catch (_) {
+      if (showErrors) {
+        _showAuthMessage('Could not sync messages right now.');
+      }
+    } finally {
+      _isSyncingMessages = false;
+    }
+  }
+
+  Future<void> _selectContact(AppUser contact) async {
+    setState(() => _selectedContact = contact);
+    await _refreshConversation();
+  }
+
+  Future<void> _refreshConversation() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _conversation.clear());
+      return;
+    }
+
+    final List<ChatMessage> messages =
+        await _messagingService.listForPair(currentUser.id, selectedContact.id);
+    final List<String> renderedConversation = <String>[];
+
+    for (final ChatMessage message in messages) {
+      final bool isMine = message.fromUserId == currentUser.id;
+      final String text = await _decodeMessageText(message);
+      final String fromLabel = isMine
+          ? 'Me'
+          : _displayNameForUserId(
+              message.fromUserId,
+              fallback: selectedContact.displayName,
+            );
+      final String toLabel = isMine ? selectedContact.displayName : 'Me';
+      renderedConversation.add('$fromLabel -> $toLabel: $text');
+    }
+
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+
+    setState(() {
+      _conversation
+        ..clear()
+        ..addAll(renderedConversation);
+    });
+  }
+
+  Future<String> _decodeMessageText(ChatMessage message) async {
+    final String? plainText =
+        _tryDecodePlainTextTransportPayload(message.cipherText);
+    if (plainText != null) {
+      return plainText;
+    }
+
+    if (_sharedSecret == null) {
+      return '[Message unavailable]';
+    }
+
+    try {
+      return await _encryptionService.decryptText(
+        encodedPayload: message.cipherText,
+        sharedSecret: _sharedSecret!,
+        associatedData: _buildMessageAad(
+          fromUserId: message.fromUserId,
+          toUserId: message.toUserId,
+        ),
+      );
+    } catch (_) {
+      return '[Unable to read message]';
+    }
+  }
+
+  String _encodePlainTextTransportPayload(String plainText) {
+    return jsonEncode(<String, dynamic>{
+      'mode': _plainTextTransportMode,
+      'text': plainText,
+    });
+  }
+
+  String? _tryDecodePlainTextTransportPayload(String payload) {
+    try {
+      final Object? decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic> &&
+          decoded['mode'] == _plainTextTransportMode) {
+        return decoded['text']?.toString() ?? '';
+      }
+    } catch (_) {
+      // Ignore and fall back to the local encryption demo decoder.
+    }
+
+    return null;
+  }
+
+  String _displayNameForUserId(String userId, {String? fallback}) {
+    if (_currentUser?.id == userId) {
+      return _currentUser!.displayName;
+    }
+
+    for (final AppUser contact in _contacts) {
+      if (contact.id == userId) {
+        return contact.displayName;
+      }
+    }
+
+    return fallback ?? _usernameFromUserId(userId);
+  }
+
+  String _usernameFromUserId(String userId) {
+    const String prefix = 'username:';
+    if (userId.startsWith(prefix)) {
+      return userId.substring(prefix.length);
+    }
+    return userId;
   }
 
   Future<void> _continueWithUsername() async {
@@ -144,12 +344,14 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
 
       switch (result.status) {
         case UsernameSignInStatus.signedIn:
-          setState(() => _currentUser = result.user);
-          await _loadContacts();
+          if (result.user != null) {
+            await _activateUserSession(result.user!);
+          }
           break;
         case UsernameSignInStatus.created:
-          setState(() => _currentUser = result.user);
-          await _loadContacts();
+          if (result.user != null) {
+            await _activateUserSession(result.user!);
+          }
           _showAuthMessage(
               'Username created and linked to your recovery email.');
           break;
@@ -213,8 +415,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         _showAuthMessage('$providerLabel login was cancelled.');
         return;
       }
-      setState(() => _currentUser = user);
-      await _loadContacts();
+      await _activateUserSession(user);
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
     } catch (_) {
@@ -250,8 +451,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   }
 
   Future<void> _recoverUsername() async {
-    final String? username = await _authService
-        .recoverUsernameForEmail(_recoveryEmailController.text);
+    final String? username =
+        await _authService.recoverUsernameForEmail(_recoveryEmailController.text);
     if (username == null) {
       _showAuthMessage('No username found for that email.');
       return;
@@ -315,52 +516,65 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     });
   }
 
-  /// Binds message metadata into AES-GCM authenticated data so that encrypted
-  /// payloads cannot be replayed with a different sender/receiver identity.
-  List<int> _buildMessageAad(
-      {required String fromUserId, required String toUserId}) {
+  /// Used only for the local encryption demo path when the shared backend is
+  /// unavailable.
+  List<int> _buildMessageAad({
+    required String fromUserId,
+    required String toUserId,
+  }) {
     return utf8.encode('$fromUserId|$toUserId');
   }
 
-  Future<void> _sendEncryptedMessage() async {
-    if (_currentUser == null ||
-        _selectedContact == null ||
-        _sharedSecret == null) {
+  Future<void> _sendMessage() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
       return;
     }
 
     final String clearText = _messageController.text.trim();
-    if (clearText.isEmpty) return;
+    if (clearText.isEmpty) {
+      return;
+    }
 
-    final List<int> aad = _buildMessageAad(
-      fromUserId: _currentUser!.id,
-      toUserId: _selectedContact!.id,
-    );
-
-    final String cipherText = await _encryptionService.encryptText(
-      plainText: clearText,
-      sharedSecret: _sharedSecret!,
-      associatedData: aad,
-    );
+    late final String cipherText;
+    if (_messagingService.isRemoteTransportEnabled) {
+      cipherText = _encodePlainTextTransportPayload(clearText);
+    } else {
+      if (_sharedSecret == null) {
+        return;
+      }
+      final List<int> aad = _buildMessageAad(
+        fromUserId: currentUser.id,
+        toUserId: selectedContact.id,
+      );
+      cipherText = await _encryptionService.encryptText(
+        plainText: clearText,
+        sharedSecret: _sharedSecret!,
+        associatedData: aad,
+      );
+    }
 
     final ChatMessage message = ChatMessage(
-      fromUserId: _currentUser!.id,
-      toUserId: _selectedContact!.id,
+      fromUserId: currentUser.id,
+      toUserId: selectedContact.id,
       cipherText: cipherText,
       sentAt: DateTime.now(),
     );
-    await _messagingService.send(message);
 
-    final String decrypted = await _encryptionService.decryptText(
-      encodedPayload: cipherText,
-      sharedSecret: _sharedSecret!,
-      associatedData: aad,
-    );
+    try {
+      await _messagingService.send(message);
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+      return;
+    } catch (_) {
+      _showAuthMessage('Could not send message right now.');
+      return;
+    }
 
-    setState(() {
-      _conversation.add('Me → ${_selectedContact!.displayName}: $decrypted');
-      _messageController.clear();
-    });
+    _messageController.clear();
+    await _refreshConversation();
+    await _syncMessages(showErrors: false);
   }
 
   @override
@@ -368,7 +582,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     final AppUser? user = _currentUser;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Backchat Encrypted Messenger')),
+      appBar: AppBar(title: const Text('Backchat Messenger')),
       body: user == null ? _buildAuthView() : _buildChatView(user),
     );
   }
@@ -524,26 +738,31 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           Row(
             children: <Widget>[
               CircleAvatar(
-                backgroundImage: user.avatarUrl.isNotEmpty
-                    ? NetworkImage(user.avatarUrl)
-                    : null,
+                backgroundImage:
+                    user.avatarUrl.isNotEmpty ? NetworkImage(user.avatarUrl) : null,
                 child: user.avatarUrl.isEmpty ? const Icon(Icons.person) : null,
               ),
               const SizedBox(width: 12),
               Expanded(
-                  child: Text(user.displayName,
-                      style: Theme.of(context).textTheme.titleMedium)),
+                child: Text(
+                  user.displayName,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               DropdownButton<PresenceStatus>(
                 value: user.status,
                 items: PresenceStatus.values
-                    .map((PresenceStatus status) =>
-                        DropdownMenuItem<PresenceStatus>(
-                          value: status,
-                          child: Text(status.name),
-                        ))
+                    .map(
+                      (PresenceStatus status) => DropdownMenuItem<PresenceStatus>(
+                        value: status,
+                        child: Text(status.name),
+                      ),
+                    )
                     .toList(),
                 onChanged: (PresenceStatus? value) {
-                  if (value != null) _changeStatus(value);
+                  if (value != null) {
+                    _changeStatus(value);
+                  }
                 },
               ),
             ],
@@ -578,14 +797,21 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
             ],
           ),
           const SizedBox(height: 8),
+          if (_messagingService.isRemoteTransportEnabled)
+            Text(
+              'Messages sync through the shared backend in this build.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          if (_messagingService.isRemoteTransportEnabled)
+            const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             children: _contacts
                 .map(
-                  (AppUser c) => ChoiceChip(
-                    label: Text(c.displayName),
-                    selected: _selectedContact?.id == c.id,
-                    onSelected: (_) => setState(() => _selectedContact = c),
+                  (AppUser contact) => ChoiceChip(
+                    label: Text(contact.displayName),
+                    selected: _selectedContact?.id == contact.id,
+                    onSelected: (_) => _selectContact(contact),
                   ),
                 )
                 .toList(),
@@ -595,7 +821,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
             child: ListView.builder(
               itemCount: _conversation.length,
               itemBuilder: (BuildContext context, int index) => ListTile(
-                leading: const Icon(Icons.lock),
+                leading: const Icon(Icons.chat_bubble_outline),
                 title: Text(_conversation[index]),
               ),
             ),
@@ -606,18 +832,18 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                 child: TextField(
                   controller: _messageController,
                   decoration: const InputDecoration(
-                    hintText: 'Type an encrypted message',
+                    hintText: 'Type a message',
                     border: OutlineInputBorder(),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               Tooltip(
-                message: 'Send message with end-to-end encryption',
+                message: 'Send message',
                 child: FilledButton.icon(
-                  onPressed: _sendEncryptedMessage,
-                  icon: const Icon(Icons.lock),
-                  label: const Text('Send secure'),
+                  onPressed: _sendMessage,
+                  icon: const Icon(Icons.send),
+                  label: const Text('Send'),
                 ),
               ),
             ],

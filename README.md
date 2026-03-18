@@ -134,13 +134,17 @@ For the current implementation, social login runs through the Backchat PHP API:
 
 1. Fill OAuth keys in `backend/api/config.php` (copied from `config.php.example`).
 2. Set each provider redirect URI to:
-   - `https://<your-api-host>/backchat-api/auth_oauth_callback.php`
-3. Re-run `POST /backchat-api/setup.php` once to create OAuth tables.
+   - `https://<your-api-host>/auth_oauth_callback.php`
+3. Re-run `POST /setup.php` once to create OAuth tables.
 4. Run Flutter with your API base URL:
 
 ```bash
-flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://<your-api-host>/backchat-api
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://<your-api-host>
 ```
+
+> Note: OAuth providers generally require HTTPS redirect URIs. The current
+> Elastic Beanstalk URL for this project is HTTP-only, so username-based sign-in
+> works there, but Google/Facebook/X login should wait until you add HTTPS.
 
 ## Security model
 
@@ -187,11 +191,19 @@ If your goal is "no middlebox at all," expect reduced reliability unless both pe
 ## Hosted API (username sync + invites)
 
 The app can use a hosted API for shared username accounts and contact invites.
+It now defaults to:
+
+```text
+http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
+```
+
+Desktop development can use that URL as-is. For mobile builds and production
+social login, plan to move to HTTPS later.
 
 Run with:
 
 ```bash
-flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://mysticalg.kesug.com/backchat-api
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
 ```
 
 Server files are in `backend/api/`.

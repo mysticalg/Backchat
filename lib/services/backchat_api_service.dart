@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_user.dart';
+import '../models/chat_message.dart';
 
 class BackchatApiException implements Exception {
   const BackchatApiException({
@@ -64,6 +65,16 @@ class SocialOAuthProbeResult {
   final bool xConfigured;
 }
 
+class PollMessagesResult {
+  const PollMessagesResult({
+    required this.nextSinceId,
+    required this.messages,
+  });
+
+  final int nextSinceId;
+  final List<ChatMessage> messages;
+}
+
 abstract class BackchatApiClient {
   bool get isConfigured;
 
@@ -84,6 +95,18 @@ abstract class BackchatApiClient {
 
   Future<SocialOAuthProbeResult> probeSocialOAuth();
 
+  Future<void> sendMessage({
+    required String toUsername,
+    required String cipherText,
+    String? clientMessageId,
+  });
+
+  Future<PollMessagesResult> pollMessages({
+    int sinceId,
+    int limit,
+    required String currentUserId,
+  });
+
   Future<void> clearToken();
 }
 
@@ -91,12 +114,22 @@ class BackchatApiService implements BackchatApiClient {
   BackchatApiService({http.Client? client}) : _client = client ?? http.Client();
 
   static const String _tokenStorageKey = 'backchat_api_token_v1';
-  static const String _apiBaseUrl =
+  static const String _defaultApiBaseUrl =
+      'http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com';
+  static const String _configuredApiBaseUrl =
       String.fromEnvironment('BACKCHAT_API_BASE_URL');
   static const Duration _requestTimeout = Duration(seconds: 8);
 
   final http.Client _client;
   String? _cachedToken;
+
+  String get _apiBaseUrl {
+    final String configured = _configuredApiBaseUrl.trim();
+    if (configured.isNotEmpty) {
+      return configured;
+    }
+    return _defaultApiBaseUrl;
+  }
 
   @override
   bool get isConfigured => _apiBaseUrl.trim().isNotEmpty;
@@ -234,6 +267,63 @@ class BackchatApiService implements BackchatApiClient {
   }
 
   @override
+  Future<void> sendMessage({
+    required String toUsername,
+    required String cipherText,
+    String? clientMessageId,
+  }) async {
+    await _postJson(
+      '/send_message.php',
+      <String, dynamic>{
+        'toUsername': toUsername,
+        'cipherText': cipherText,
+        if (clientMessageId != null && clientMessageId.isNotEmpty)
+          'clientMessageId': clientMessageId,
+      },
+    );
+  }
+
+  @override
+  Future<PollMessagesResult> pollMessages({
+    int sinceId = 0,
+    int limit = 100,
+    required String currentUserId,
+  }) async {
+    final int safeLimit = limit < 1 ? 1 : (limit > 200 ? 200 : limit);
+    final Map<String, dynamic> payload = await _getJson(
+      '/poll_messages.php?sinceId=$sinceId&limit=$safeLimit',
+    );
+
+    final List<dynamic> rows = payload['messages'] is List<dynamic>
+        ? payload['messages'] as List<dynamic>
+        : <dynamic>[];
+    final List<ChatMessage> messages = rows
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (Map<String, dynamic> row) => ChatMessage(
+            fromUserId: row['fromUserId']?.toString() ?? '',
+            toUserId: currentUserId,
+            cipherText: row['cipherText']?.toString() ?? '',
+            sentAt: _parseApiUtcDateTime(
+              row['sentAtUtc']?.toString(),
+            ),
+          ),
+        )
+        .where(
+          (ChatMessage message) =>
+              message.fromUserId.isNotEmpty && message.cipherText.isNotEmpty,
+        )
+        .toList();
+
+    return PollMessagesResult(
+      nextSinceId: payload['nextSinceId'] is int
+          ? payload['nextSinceId'] as int
+          : int.tryParse(payload['nextSinceId']?.toString() ?? '') ?? sinceId,
+      messages: messages,
+    );
+  }
+
+  @override
   Future<void> clearToken() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenStorageKey);
@@ -364,7 +454,8 @@ class BackchatApiService implements BackchatApiClient {
         contentType.contains('text/html') || loweredBody.trimLeft().startsWith('<');
     if (looksLikeHtml) {
       return 'API returned HTML instead of JSON at $uri. '
-          'Check BACKCHAT_API_BASE_URL and ensure it points to the PHP API folder (for example /backchat-api).';
+          'Check BACKCHAT_API_BASE_URL and ensure it points to the API root URL '
+          '(for example http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com).';
     }
 
     return 'API did not return JSON at $uri.';
@@ -402,5 +493,18 @@ class BackchatApiService implements BackchatApiClient {
       provider: provider,
       status: PresenceStatus.online,
     );
+  }
+
+  DateTime _parseApiUtcDateTime(String? value) {
+    final String normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return DateTime.now().toUtc();
+    }
+
+    try {
+      return DateTime.parse('${normalized.replaceFirst(' ', 'T')}Z').toLocal();
+    } on FormatException {
+      return DateTime.now();
+    }
   }
 }
