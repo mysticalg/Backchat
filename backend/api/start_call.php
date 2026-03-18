@@ -41,15 +41,17 @@ try {
          FROM call_sessions
          WHERE status IN ("ringing", "active")
            AND (
-               (caller_user_id = :caller_user_id AND callee_user_id = :callee_user_id)
+               (caller_user_id = :first_caller_user_id AND callee_user_id = :first_callee_user_id)
                OR
-               (caller_user_id = :callee_user_id AND callee_user_id = :caller_user_id)
+               (caller_user_id = :second_caller_user_id AND callee_user_id = :second_callee_user_id)
            )
          LIMIT 1'
     );
     $activeCheck->execute([
-        ':caller_user_id' => (int)$authUser['id'],
-        ':callee_user_id' => (int)$recipient['id'],
+        ':first_caller_user_id' => (int)$authUser['id'],
+        ':first_callee_user_id' => (int)$recipient['id'],
+        ':second_caller_user_id' => (int)$recipient['id'],
+        ':second_callee_user_id' => (int)$authUser['id'],
     ]);
     if ($activeCheck->fetch()) {
         bc_fail('call_in_progress', 'A call with this contact is already in progress.', 409);
