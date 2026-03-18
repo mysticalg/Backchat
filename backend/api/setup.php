@@ -46,6 +46,18 @@ function bc_setup_ensure_profile_columns(PDO $pdo): void
 function bc_setup_ensure_call_schema(PDO $pdo): void
 {
     if (bc_setup_table_exists($pdo, 'call_sessions')) {
+        if (!bc_setup_column_exists($pdo, 'call_sessions', 'caller_user_id')) {
+            $pdo->exec('ALTER TABLE call_sessions ADD COLUMN caller_user_id BIGINT UNSIGNED NULL AFTER id');
+        }
+        if (!bc_setup_column_exists($pdo, 'call_sessions', 'callee_user_id')) {
+            $pdo->exec('ALTER TABLE call_sessions ADD COLUMN callee_user_id BIGINT UNSIGNED NULL AFTER caller_user_id');
+        }
+        if (!bc_setup_column_exists($pdo, 'call_sessions', 'kind')) {
+            $pdo->exec("ALTER TABLE call_sessions ADD COLUMN kind VARCHAR(16) NOT NULL DEFAULT 'audio' AFTER callee_user_id");
+        }
+        if (!bc_setup_column_exists($pdo, 'call_sessions', 'status')) {
+            $pdo->exec("ALTER TABLE call_sessions ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'ringing' AFTER kind");
+        }
         if (!bc_setup_column_exists($pdo, 'call_sessions', 'preferences_json')) {
             $pdo->exec('ALTER TABLE call_sessions ADD COLUMN preferences_json TEXT NULL AFTER status');
         }
@@ -54,6 +66,13 @@ function bc_setup_ensure_call_schema(PDO $pdo): void
         }
         if (!bc_setup_column_exists($pdo, 'call_sessions', 'ended_at')) {
             $pdo->exec('ALTER TABLE call_sessions ADD COLUMN ended_at DATETIME NULL AFTER answered_at');
+        }
+        if (!bc_setup_column_exists($pdo, 'call_sessions', 'created_at')) {
+            $pdo->exec(
+                'ALTER TABLE call_sessions
+                 ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                 AFTER ended_at'
+            );
         }
         if (!bc_setup_column_exists($pdo, 'call_sessions', 'updated_at')) {
             $pdo->exec(
@@ -66,10 +85,28 @@ function bc_setup_ensure_call_schema(PDO $pdo): void
     }
 
     if (bc_setup_table_exists($pdo, 'call_signal_events')) {
+        if (!bc_setup_column_exists($pdo, 'call_signal_events', 'call_session_id')) {
+            $pdo->exec(
+                'ALTER TABLE call_signal_events
+                 ADD COLUMN call_session_id BIGINT UNSIGNED NULL AFTER id'
+            );
+        }
+        if (!bc_setup_column_exists($pdo, 'call_signal_events', 'sender_user_id')) {
+            $pdo->exec(
+                'ALTER TABLE call_signal_events
+                 ADD COLUMN sender_user_id BIGINT UNSIGNED NULL AFTER call_session_id'
+            );
+        }
         if (!bc_setup_column_exists($pdo, 'call_signal_events', 'recipient_user_id')) {
             $pdo->exec(
                 'ALTER TABLE call_signal_events
                  ADD COLUMN recipient_user_id BIGINT UNSIGNED NOT NULL AFTER sender_user_id'
+            );
+        }
+        if (!bc_setup_column_exists($pdo, 'call_signal_events', 'event_type')) {
+            $pdo->exec(
+                "ALTER TABLE call_signal_events
+                 ADD COLUMN event_type VARCHAR(16) NOT NULL DEFAULT 'candidate' AFTER recipient_user_id"
             );
         }
         if (!bc_setup_column_exists($pdo, 'call_signal_events', 'payload_json')) {

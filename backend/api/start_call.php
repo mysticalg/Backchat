@@ -35,26 +35,26 @@ if ((int)$recipient['id'] === (int)$authUser['id']) {
     bc_fail('invalid_recipient', 'Cannot start a call with yourself.', 409);
 }
 
-$activeCheck = bc_pdo()->prepare(
-    'SELECT id
-     FROM call_sessions
-     WHERE status IN ("ringing", "active")
-       AND (
-           (caller_user_id = :caller_user_id AND callee_user_id = :callee_user_id)
-           OR
-           (caller_user_id = :callee_user_id AND callee_user_id = :caller_user_id)
-       )
-     LIMIT 1'
-);
-$activeCheck->execute([
-    ':caller_user_id' => (int)$authUser['id'],
-    ':callee_user_id' => (int)$recipient['id'],
-]);
-if ($activeCheck->fetch()) {
-    bc_fail('call_in_progress', 'A call with this contact is already in progress.', 409);
-}
-
 try {
+    $activeCheck = bc_pdo()->prepare(
+        'SELECT id
+         FROM call_sessions
+         WHERE status IN ("ringing", "active")
+           AND (
+               (caller_user_id = :caller_user_id AND callee_user_id = :callee_user_id)
+               OR
+               (caller_user_id = :callee_user_id AND callee_user_id = :caller_user_id)
+           )
+         LIMIT 1'
+    );
+    $activeCheck->execute([
+        ':caller_user_id' => (int)$authUser['id'],
+        ':callee_user_id' => (int)$recipient['id'],
+    ]);
+    if ($activeCheck->fetch()) {
+        bc_fail('call_in_progress', 'A call with this contact is already in progress.', 409);
+    }
+
     $preferencesJson = json_encode($settings, JSON_UNESCAPED_SLASHES);
     $insert = bc_pdo()->prepare(
         'INSERT INTO call_sessions
