@@ -144,6 +144,19 @@ class MessagingService {
         .length;
   }
 
+  int totalUnreadCountForUser(String currentUserId) {
+    if (_activeUserId != currentUserId || !_hasLoadedState) {
+      return 0;
+    }
+
+    return _messages
+        .where(
+          (ChatMessage message) =>
+              message.isIncomingFor(currentUserId) && !message.isRead,
+        )
+        .length;
+  }
+
   Future<bool> markConversationRead({
     required String currentUserId,
     required String contactUserId,

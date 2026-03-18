@@ -23,8 +23,21 @@ class _FakeApiClient implements BackchatApiClient {
   Future<List<AppUser>> fetchContacts() async => <AppUser>[];
 
   @override
+  Future<AppUser> fetchMyProfile() {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Map<String, dynamic>> inviteByUsername(String username) async =>
       <String, dynamic>{};
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) {
+    throw UnimplementedError();
+  }
 
   @override
   Future<SocialOAuthPollResult> pollSocialOAuth(String state) {

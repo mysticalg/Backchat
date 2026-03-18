@@ -87,6 +87,13 @@ abstract class BackchatApiClient {
 
   Future<List<AppUser>> fetchContacts();
 
+  Future<AppUser> fetchMyProfile();
+
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  });
+
   Future<Map<String, dynamic>> inviteByUsername(String username);
 
   Future<SocialOAuthStartResult> startSocialOAuth(String provider);
@@ -175,6 +182,41 @@ class BackchatApiService implements BackchatApiClient {
         .whereType<Map<String, dynamic>>()
         .map(_appUserFromApiMap)
         .toList();
+  }
+
+  @override
+  Future<AppUser> fetchMyProfile() async {
+    final Map<String, dynamic> payload = await _getJson('/profile.php');
+    final Object? userPayload = payload['user'];
+    if (userPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'profile_invalid',
+        message: 'Profile response is missing the user payload.',
+      );
+    }
+    return _appUserFromApiMap(userPayload);
+  }
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) async {
+    final Map<String, dynamic> payload = await _postJson(
+      '/profile.php',
+      <String, dynamic>{
+        'avatarUrl': avatarUrl,
+        'quote': quote,
+      },
+    );
+    final Object? userPayload = payload['user'];
+    if (userPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'profile_invalid',
+        message: 'Profile update response is missing the user payload.',
+      );
+    }
+    return _appUserFromApiMap(userPayload);
   }
 
   @override
@@ -503,6 +545,7 @@ class BackchatApiService implements BackchatApiClient {
       displayName: displayName,
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
+      quote: json['quote']?.toString() ?? '',
       status: status,
       lastSeenAt: _tryParseApiUtcDateTime(
         json['lastSeenAtUtc']?.toString(),

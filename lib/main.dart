@@ -10,6 +10,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'models/app_user.dart';
 import 'models/chat_message.dart';
 import 'services/auth_service.dart';
+import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
@@ -59,6 +60,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   final ContactsService _contactsService = ContactsService();
   final EncryptionService _encryptionService = EncryptionService();
   final MessagingService _messagingService = MessagingService();
+  final AppWindowService _appWindowService = AppWindowService();
+  final BackchatApiClient _profileApi = BackchatApiService();
   final FocusNode _messageFocusNode = FocusNode();
   final ScrollController _conversationScrollController = ScrollController();
 
@@ -172,6 +175,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         _selectedContact = selectedContact;
       });
       await _refreshConversation();
+      await _syncWindowUnreadCount();
     } finally {
       _isLoadingContacts = false;
     }
@@ -205,6 +209,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _startMessagePolling();
     _startContactRefresh();
     await _syncMessages(showErrors: false);
+    await _syncWindowUnreadCount();
   }
 
   void _startMessagePolling() {
@@ -245,6 +250,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         await _loadContacts();
         await _refreshConversation(scrollToBottom: true);
       }
+      await _syncWindowUnreadCount();
     } on BackchatApiException catch (e) {
       if (showErrors) {
         _showAuthMessage(e.message);
@@ -274,6 +280,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         return;
       }
       setState(() => _conversation.clear());
+      await _syncWindowUnreadCount();
       return;
     }
 
@@ -308,6 +315,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     if (scrollToBottom) {
       _scrollConversationToBottom();
     }
+    await _syncWindowUnreadCount();
   }
 
   Future<String> _decodeMessageText(ChatMessage message) async {
@@ -391,6 +399,28 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         curve: Curves.easeOut,
       );
     });
+  }
+
+  void _appendEmoji(String emoji) {
+    final TextSelection selection = _messageController.selection;
+    final String currentText = _messageController.text;
+    final int start =
+        selection.start >= 0 ? selection.start : currentText.length;
+    final int end = selection.end >= 0 ? selection.end : currentText.length;
+    final String nextText = currentText.replaceRange(start, end, emoji);
+    _messageController.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: start + emoji.length),
+    );
+    _messageFocusNode.requestFocus();
+  }
+
+  Future<void> _syncWindowUnreadCount() async {
+    final AppUser? currentUser = _currentUser;
+    final int unreadCount = currentUser == null
+        ? 0
+        : _messagingService.totalUnreadCountForUser(currentUser.id);
+    await _appWindowService.setUnreadCount(unreadCount);
   }
 
   Future<void> _continueWithUsername() async {
@@ -582,6 +612,129 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         setState(() => _isInviteBusy = false);
       }
     }
+  }
+
+  Future<void> _editProfile() async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+    if (!_profileApi.isConfigured) {
+      _showAuthMessage('Profile editing needs the shared backend enabled.');
+      return;
+    }
+
+    final TextEditingController avatarController = TextEditingController(
+      text: currentUser.avatarUrl,
+    );
+    final TextEditingController quoteController = TextEditingController(
+      text: currentUser.quote,
+    );
+
+    AppUser? updatedUser;
+    String? dialogError;
+    bool isSaving = false;
+
+    try {
+      updatedUser = await showDialog<AppUser>(
+        context: context,
+        builder: (BuildContext context) {
+          return StatefulBuilder(
+            builder: (BuildContext context, StateSetter setDialogState) {
+              Future<void> submit() async {
+                setDialogState(() {
+                  isSaving = true;
+                  dialogError = null;
+                });
+                try {
+                  final AppUser profile = await _profileApi.updateProfile(
+                    avatarUrl: avatarController.text.trim(),
+                    quote: quoteController.text.trim(),
+                  );
+                  if (!context.mounted) {
+                    return;
+                  }
+                  Navigator.of(context).pop(profile);
+                } on BackchatApiException catch (e) {
+                  setDialogState(() {
+                    dialogError = e.message;
+                    isSaving = false;
+                  });
+                } catch (_) {
+                  setDialogState(() {
+                    dialogError = 'Could not update your profile right now.';
+                    isSaving = false;
+                  });
+                }
+              }
+
+              return AlertDialog(
+                title: const Text('Edit profile'),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      TextField(
+                        controller: avatarController,
+                        decoration: const InputDecoration(
+                          labelText: 'Avatar URL',
+                          hintText: 'https://example.com/avatar.png',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: quoteController,
+                        maxLength: 160,
+                        minLines: 1,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Quote',
+                          hintText: 'A short line your contacts will see',
+                        ),
+                      ),
+                      if (dialogError != null) ...<Widget>[
+                        const SizedBox(height: 8),
+                        Text(
+                          dialogError!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    onPressed:
+                        isSaving ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: isSaving ? null : submit,
+                    child: Text(isSaving ? 'Saving...' : 'Save'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      avatarController.dispose();
+      quoteController.dispose();
+    }
+
+    if (!mounted || updatedUser == null) {
+      return;
+    }
+
+    setState(() {
+      _currentUser = updatedUser;
+    });
+    await _loadContacts();
+    _showAuthMessage('Profile updated.');
   }
 
   void _changeStatus(PresenceStatus status) {
@@ -893,8 +1046,20 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                                 : 'Signed in',
                             style: theme.textTheme.bodySmall,
                           ),
+                          if (user.quote.isNotEmpty)
+                            Text(
+                              user.quote,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall,
+                            ),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: 'Edit profile',
+                      onPressed: _editProfile,
+                      icon: const Icon(Icons.edit_outlined),
                     ),
                     DropdownButtonHideUnderline(
                       child: DropdownButton<PresenceStatus>(
@@ -965,6 +1130,16 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                                       selectedContact.displayName,
                                       style: theme.textTheme.titleSmall,
                                     ),
+                                    if (selectedContact
+                                        .quote.isNotEmpty) ...<Widget>[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        selectedContact.quote,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                    ],
                                     const SizedBox(height: 4),
                                     Row(
                                       children: <Widget>[
@@ -1043,6 +1218,37 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                   ),
                 ),
                 const SizedBox(width: 10),
+                PopupMenuButton<String>(
+                  tooltip: 'Insert emoji',
+                  onSelected: _appendEmoji,
+                  itemBuilder: (BuildContext context) {
+                    const List<String> emojis = <String>[
+                      '😀',
+                      '😂',
+                      '😍',
+                      '👍',
+                      '🎉',
+                      '❤️',
+                      '👀',
+                    ];
+                    return emojis
+                        .map(
+                          (String emoji) => PopupMenuItem<String>(
+                            value: emoji,
+                            child: Text(
+                              emoji,
+                              style: const TextStyle(fontSize: 22),
+                            ),
+                          ),
+                        )
+                        .toList();
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Icon(Icons.emoji_emotions_outlined),
+                  ),
+                ),
+                const SizedBox(width: 2),
                 FilledButton.icon(
                   onPressed: selectedContact == null ? null : _sendMessage,
                   icon: const Icon(Icons.send),
@@ -1194,6 +1400,15 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                       contact.displayName,
                       style: theme.textTheme.titleSmall,
                     ),
+                    if (contact.quote.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 2),
+                      Text(
+                        contact.quote,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     Text(
                       _contactStatusLabel(contact),

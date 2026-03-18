@@ -17,7 +17,7 @@ $normalized = bc_normalize_username($username);
 $pdo = bc_pdo();
 
 $findUser = $pdo->prepare(
-    'SELECT id, username, normalized_username, recovery_email
+    'SELECT id, username, normalized_username, recovery_email, avatar_url, quote_text
      FROM users
      WHERE normalized_username = :normalized_username
      LIMIT 1'
@@ -56,8 +56,8 @@ if ($emailOwner) {
 
 try {
     $insert = $pdo->prepare(
-        'INSERT INTO users (username, normalized_username, recovery_email, created_at)
-         VALUES (:username, :normalized_username, :recovery_email, UTC_TIMESTAMP())'
+        'INSERT INTO users (username, normalized_username, recovery_email, avatar_url, quote_text, created_at)
+         VALUES (:username, :normalized_username, :recovery_email, NULL, NULL, UTC_TIMESTAMP())'
     );
     $insert->execute([
         ':username' => $username,
@@ -69,7 +69,7 @@ try {
 }
 
 $findCreated = $pdo->prepare(
-    'SELECT id, username, normalized_username, recovery_email
+    'SELECT id, username, normalized_username, recovery_email, avatar_url, quote_text
      FROM users
      WHERE normalized_username = :normalized_username
      LIMIT 1'

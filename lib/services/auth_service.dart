@@ -346,6 +346,7 @@ class AuthService {
       avatarUrl: '',
       provider: AuthProvider.username,
       username: account.username,
+      quote: '',
     );
   }
 
@@ -367,6 +368,7 @@ class AuthService {
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
       username: username,
+      quote: json['quote']?.toString() ?? '',
       status: PresenceStatus.online,
     );
   }

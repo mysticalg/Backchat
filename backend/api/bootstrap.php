@@ -602,7 +602,7 @@ function bc_unique_recovery_email(string $preferred, string $provider, string $p
 function bc_load_user_row_by_id(int $userId): array
 {
     $stmt = bc_pdo()->prepare(
-        'SELECT id, username, normalized_username, recovery_email
+        'SELECT id, username, normalized_username, recovery_email, avatar_url, quote_text
          FROM users
          WHERE id = :id
          LIMIT 1'
@@ -620,7 +620,7 @@ function bc_find_or_create_user_for_oauth(string $provider, array $profile): arr
     $pdo = bc_pdo();
 
     $existingIdentity = $pdo->prepare(
-        'SELECT u.id, u.username, u.normalized_username, u.recovery_email
+        'SELECT u.id, u.username, u.normalized_username, u.recovery_email, u.avatar_url, u.quote_text
          FROM oauth_identities oi
          INNER JOIN users u ON u.id = oi.user_id
          WHERE oi.provider = :provider
@@ -639,7 +639,7 @@ function bc_find_or_create_user_for_oauth(string $provider, array $profile): arr
     $email = trim((string)($profile['email'] ?? ''));
     if ($email !== '' && bc_validate_email($email)) {
         $existingEmail = $pdo->prepare(
-            'SELECT id, username, normalized_username, recovery_email
+            'SELECT id, username, normalized_username, recovery_email, avatar_url, quote_text
              FROM users
              WHERE LOWER(recovery_email) = :email
              LIMIT 1'
@@ -660,13 +660,14 @@ function bc_find_or_create_user_for_oauth(string $provider, array $profile): arr
     $normalized = bc_normalize_username($username);
 
     $insert = $pdo->prepare(
-        'INSERT INTO users (username, normalized_username, recovery_email, created_at)
-         VALUES (:username, :normalized_username, :recovery_email, UTC_TIMESTAMP())'
+        'INSERT INTO users (username, normalized_username, recovery_email, avatar_url, quote_text, created_at)
+         VALUES (:username, :normalized_username, :recovery_email, :avatar_url, NULL, UTC_TIMESTAMP())'
     );
     $insert->execute([
         ':username' => $username,
         ':normalized_username' => $normalized,
         ':recovery_email' => $recoveryEmail,
+        ':avatar_url' => (string)($profile['avatar_url'] ?? ''),
     ]);
     $newUserId = (int)$pdo->lastInsertId();
     return bc_load_user_row_by_id($newUserId);
@@ -724,6 +725,19 @@ function bc_upsert_oauth_identity(
         ':token_expires_at' => $expiresAt,
         ':raw_profile_json' => (string)$rawProfileJson,
     ]);
+
+    $syncUserProfile = bc_pdo()->prepare(
+        'UPDATE users
+         SET avatar_url = CASE
+             WHEN (avatar_url IS NULL OR avatar_url = "") THEN :avatar_url
+             ELSE avatar_url
+         END
+         WHERE id = :user_id'
+    );
+    $syncUserProfile->execute([
+        ':user_id' => $userId,
+        ':avatar_url' => (string)($profile['avatar_url'] ?? ''),
+    ]);
 }
 
 function bc_enriched_user_payload(array $userRow): array
@@ -742,7 +756,8 @@ function bc_enriched_user_payload(array $userRow): array
         'id' => 'username:' . ($userRow['normalized_username'] ?? ''),
         'username' => (string)($userRow['username'] ?? ''),
         'displayName' => (string)($identity['display_name'] ?? ($userRow['username'] ?? '')),
-        'avatarUrl' => (string)($identity['avatar_url'] ?? ''),
+        'avatarUrl' => (string)($userRow['avatar_url'] ?? ($identity['avatar_url'] ?? '')),
+        'quote' => (string)($userRow['quote_text'] ?? ''),
         'provider' => (string)($identity['provider'] ?? 'username'),
         'status' => 'online',
     ];
@@ -755,7 +770,7 @@ function bc_auth_user_or_fail(): array
         bc_fail('unauthorized', 'Missing auth token.', 401);
     }
 
-    $sql = 'SELECT u.id, u.username, u.normalized_username
+    $sql = 'SELECT u.id, u.username, u.normalized_username, u.avatar_url, u.quote_text
             FROM sessions s
             INNER JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = :token_hash
@@ -790,11 +805,13 @@ function bc_user_payload(array $row): array
     if (!in_array($status, ['online', 'offline', 'busy'], true)) {
         $status = 'online';
     }
+    $quote = trim((string)($row['quote_text'] ?? ($row['quote'] ?? '')));
     return [
         'id' => 'username:' . ($row['normalized_username'] ?? ''),
         'username' => (string)($row['username'] ?? ''),
         'displayName' => $displayName,
         'avatarUrl' => $avatarUrl,
+        'quote' => $quote,
         'provider' => $provider,
         'status' => $status,
         'lastSeenAtUtc' => isset($row['last_seen_at']) ? (string)$row['last_seen_at'] : null,

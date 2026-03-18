@@ -11,6 +11,8 @@ $stmt = bc_pdo()->prepare(
          u.id,
          u.username,
          u.normalized_username,
+         u.avatar_url,
+         u.quote_text,
          MAX(s.last_seen_at) AS last_seen_at,
          CASE
              WHEN MAX(s.last_seen_at) >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 45 SECOND)

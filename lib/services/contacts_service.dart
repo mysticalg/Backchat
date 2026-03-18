@@ -173,6 +173,7 @@ class ContactsService {
       'displayName': user.displayName,
       'avatarUrl': user.avatarUrl,
       'provider': user.provider.name,
+      'quote': user.quote,
       'status': user.status.name,
       'lastSeenAtUtc': user.lastSeenAt?.toUtc().toIso8601String(),
     };
@@ -200,6 +201,7 @@ class ContactsService {
           json['displayName']?.toString() ?? json['username']?.toString() ?? '',
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
+      quote: json['quote']?.toString() ?? '',
       status: status,
       lastSeenAt: DateTime.tryParse(
         json['lastSeenAtUtc']?.toString() ?? '',

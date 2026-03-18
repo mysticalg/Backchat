@@ -9,6 +9,7 @@ class AppUser {
     required this.avatarUrl,
     required this.provider,
     this.username = '',
+    this.quote = '',
     this.status = PresenceStatus.online,
     this.lastSeenAt,
   });
@@ -18,6 +19,7 @@ class AppUser {
   final String avatarUrl;
   final AuthProvider provider;
   final String username;
+  final String quote;
   final PresenceStatus status;
   final DateTime? lastSeenAt;
 
@@ -25,6 +27,7 @@ class AppUser {
     String? displayName,
     String? avatarUrl,
     String? username,
+    String? quote,
     PresenceStatus? status,
     DateTime? lastSeenAt,
     bool clearLastSeenAt = false,
@@ -35,6 +38,7 @@ class AppUser {
       avatarUrl: avatarUrl ?? this.avatarUrl,
       provider: provider,
       username: username ?? this.username,
+      quote: quote ?? this.quote,
       status: status ?? this.status,
       lastSeenAt: clearLastSeenAt ? null : (lastSeenAt ?? this.lastSeenAt),
     );

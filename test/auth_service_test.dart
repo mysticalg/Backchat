@@ -19,7 +19,20 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<AppUser> fetchMyProfile() async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
   Future<Map<String, dynamic>> inviteByUsername(String username) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
 
@@ -81,8 +94,21 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   Future<List<AppUser>> fetchContacts() async => <AppUser>[];
 
   @override
+  Future<AppUser> fetchMyProfile() async {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Map<String, dynamic>> inviteByUsername(String username) async =>
       <String, dynamic>{};
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) async {
+    throw UnimplementedError();
+  }
 
   @override
   Future<SocialOAuthPollResult> pollSocialOAuth(String state) async {
@@ -202,7 +228,8 @@ void main() {
         return true;
       },
       urlLauncher: (Uri uri, LaunchMode mode) async {
-        fail('url_launcher fallback should not run when process launch succeeds');
+        fail(
+            'url_launcher fallback should not run when process launch succeeds');
       },
     );
 

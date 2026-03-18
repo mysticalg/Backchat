@@ -18,7 +18,20 @@ class _DisabledApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<AppUser> fetchMyProfile() {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Map<String, dynamic>> inviteByUsername(String username) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) {
     throw UnimplementedError();
   }
 
