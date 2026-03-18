@@ -1,4 +1,4 @@
-package com.example.backchat
+package com.mysticalg.backchat
 
 import io.flutter.embedding.android.FlutterActivity
 
