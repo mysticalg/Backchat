@@ -11,9 +11,6 @@ CREATE TABLE IF NOT EXISTS users (
     UNIQUE KEY uniq_users_recovery_email (recovery_email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT NULL AFTER recovery_email;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS quote_text VARCHAR(160) NULL AFTER avatar_url;
-
 CREATE TABLE IF NOT EXISTS sessions (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     user_id BIGINT UNSIGNED NOT NULL,

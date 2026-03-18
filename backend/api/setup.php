@@ -3,6 +3,33 @@ declare(strict_types=1);
 
 require __DIR__ . '/bootstrap.php';
 
+function bc_setup_column_exists(PDO $pdo, string $tableName, string $columnName): bool
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = :table_name
+           AND COLUMN_NAME = :column_name
+         LIMIT 1'
+    );
+    $stmt->execute([
+        ':table_name' => $tableName,
+        ':column_name' => $columnName,
+    ]);
+    return (bool)$stmt->fetchColumn();
+}
+
+function bc_setup_ensure_profile_columns(PDO $pdo): void
+{
+    if (!bc_setup_column_exists($pdo, 'users', 'avatar_url')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN avatar_url TEXT NULL AFTER recovery_email');
+    }
+    if (!bc_setup_column_exists($pdo, 'users', 'quote_text')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN quote_text VARCHAR(160) NULL AFTER avatar_url');
+    }
+}
+
 $payload = bc_read_json_body();
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? '');
 if ($method !== 'POST') {
@@ -33,6 +60,7 @@ try {
             $pdo->exec($statement);
         }
     }
+    bc_setup_ensure_profile_columns($pdo);
     bc_json([
         'ok' => true,
         'status' => 'schema_ready',
