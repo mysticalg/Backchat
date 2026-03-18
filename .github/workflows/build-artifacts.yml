@@ -182,6 +182,40 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Prepare Android signing
+        shell: bash
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            ANDROID_UPLOAD_KEYSTORE_BASE64
+            ANDROID_UPLOAD_STORE_PASSWORD
+            ANDROID_UPLOAD_KEY_ALIAS
+            ANDROID_UPLOAD_KEY_PASSWORD
+          )
+
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name:-}" ]; then
+              echo "::error::Missing required GitHub secret: ${var_name}"
+              exit 1
+            fi
+          done
+
+          keystore_path="$GITHUB_WORKSPACE/android/app/upload-keystore.jks"
+          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+
+          cat > "$GITHUB_WORKSPACE/android/key.properties" <<EOF
+          storeFile=app/upload-keystore.jks
+          storePassword=$ANDROID_UPLOAD_STORE_PASSWORD
+          keyAlias=$ANDROID_UPLOAD_KEY_ALIAS
+          keyPassword=$ANDROID_UPLOAD_KEY_PASSWORD
+          EOF
+
       - name: Build Android APK
         run: flutter build apk --release
 
@@ -202,6 +236,13 @@ jobs:
           path: |
             backchat-android-${{ needs.prepare-release.outputs.app_version }}.apk
             backchat-android-${{ needs.prepare-release.outputs.app_version }}.aab
+
+      - name: Clean Android signing material
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -f android/key.properties
+          rm -f android/app/upload-keystore.jks
 
   publish-release:
     needs:

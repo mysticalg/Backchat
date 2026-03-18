@@ -1,0 +1,6 @@
+# Copy this file to android/key.properties and replace the values below.
+# Keep the real key.properties file out of version control.
+storeFile=app/upload-keystore.jks
+storePassword=replace-me
+keyAlias=upload
+keyPassword=replace-me

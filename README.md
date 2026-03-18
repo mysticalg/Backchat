@@ -82,6 +82,20 @@ flutter build apk --release
 flutter build appbundle --release
 ```
 
+Release signing now reads from `android/key.properties`. Copy
+[`android/key.properties.example`](/Users/drhoo/OneDrive/Documents/GitHub/Backchat/android/key.properties.example)
+to `android/key.properties`, point `storeFile` at your upload keystore, and
+fill in the alias/passwords. Keep both the keystore and `android/key.properties`
+out of git.
+
+The GitHub `Build Installers and Executables` workflow expects these repository
+secrets before Android release builds will pass:
+
+- `ANDROID_UPLOAD_KEYSTORE_BASE64`
+- `ANDROID_UPLOAD_STORE_PASSWORD`
+- `ANDROID_UPLOAD_KEY_ALIAS`
+- `ANDROID_UPLOAD_KEY_PASSWORD`
+
 ## GitHub Actions build pipeline
 
 This repo now includes a manual GitHub Actions workflow at `.github/workflows/build-artifacts.yml`.
