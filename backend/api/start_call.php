@@ -54,39 +54,45 @@ if ($activeCheck->fetch()) {
     bc_fail('call_in_progress', 'A call with this contact is already in progress.', 409);
 }
 
-$preferencesJson = json_encode($settings, JSON_UNESCAPED_SLASHES);
-$insert = bc_pdo()->prepare(
-    'INSERT INTO call_sessions
-     (caller_user_id, callee_user_id, kind, status, preferences_json, created_at, updated_at)
-     VALUES
-     (:caller_user_id, :callee_user_id, :kind, "ringing", :preferences_json, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
-);
-$insert->execute([
-    ':caller_user_id' => (int)$authUser['id'],
-    ':callee_user_id' => (int)$recipient['id'],
-    ':kind' => $kind,
-    ':preferences_json' => $preferencesJson,
-]);
-$callId = (int)bc_pdo()->lastInsertId();
+try {
+    $preferencesJson = json_encode($settings, JSON_UNESCAPED_SLASHES);
+    $insert = bc_pdo()->prepare(
+        'INSERT INTO call_sessions
+         (caller_user_id, callee_user_id, kind, status, preferences_json, created_at, updated_at)
+         VALUES
+         (:caller_user_id, :callee_user_id, :kind, "ringing", :preferences_json, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+    );
+    $insert->execute([
+        ':caller_user_id' => (int)$authUser['id'],
+        ':callee_user_id' => (int)$recipient['id'],
+        ':kind' => $kind,
+        ':preferences_json' => $preferencesJson,
+    ]);
+    $callId = (int)bc_pdo()->lastInsertId();
 
-$eventId = bc_call_insert_event(
-    $callId,
-    (int)$authUser['id'],
-    (int)$recipient['id'],
-    'offer',
-    [
-        'description' => [
-            'type' => $offerType,
-            'sdp' => $offerSdp,
-        ],
-    ]
-);
+    $eventId = bc_call_insert_event(
+        $callId,
+        (int)$authUser['id'],
+        (int)$recipient['id'],
+        'offer',
+        [
+            'description' => [
+                'type' => $offerType,
+                'sdp' => $offerSdp,
+            ],
+        ]
+    );
 
-$callSession = bc_call_session_for_user_or_fail($callId, (int)$authUser['id']);
+    $callSession = bc_call_session_for_user_or_fail($callId, (int)$authUser['id']);
 
-bc_json([
-    'ok' => true,
-    'status' => 'ringing',
-    'call' => bc_call_summary_payload($callSession, (int)$authUser['id']),
-    'eventId' => $eventId,
-]);
+    bc_json([
+        'ok' => true,
+        'status' => 'ringing',
+        'call' => bc_call_summary_payload($callSession, (int)$authUser['id']),
+        'eventId' => $eventId,
+    ]);
+} catch (Throwable $e) {
+    bc_fail('call_start_failed', 'Could not create call session.', 500, [
+        'detail' => $e->getMessage(),
+    ]);
+}
