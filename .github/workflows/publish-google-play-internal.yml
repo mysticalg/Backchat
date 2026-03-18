@@ -1,0 +1,150 @@
+name: Publish Android to Google Play
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type PUBLISH to confirm release to Google Play
+        required: true
+        type: string
+      track:
+        description: Play track
+        required: true
+        type: choice
+        default: internal
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+      release_status:
+        description: Release status
+        required: true
+        type: choice
+        default: completed
+        options:
+          - completed
+          - draft
+
+jobs:
+  publish:
+    if: ${{ inputs.confirmation == 'PUBLISH' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Prepare Android signing
+        shell: bash
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          required_vars=(
+            ANDROID_UPLOAD_KEYSTORE_BASE64
+            ANDROID_UPLOAD_STORE_PASSWORD
+            ANDROID_UPLOAD_KEY_ALIAS
+            ANDROID_UPLOAD_KEY_PASSWORD
+          )
+
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name:-}" ]; then
+              echo "::error::Missing required GitHub secret: ${var_name}"
+              exit 1
+            fi
+          done
+
+          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/android/app/upload-keystore.jks"
+
+          cat > "$GITHUB_WORKSPACE/android/key.properties" <<EOF
+          storeFile=app/upload-keystore.jks
+          storePassword=$ANDROID_UPLOAD_STORE_PASSWORD
+          keyAlias=$ANDROID_UPLOAD_KEY_ALIAS
+          keyPassword=$ANDROID_UPLOAD_KEY_PASSWORD
+          EOF
+
+      - name: Prepare Google Play service account
+        shell: bash
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "::error::Missing required GitHub secret: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/google-play-service-account.json"
+
+      - name: Build Android app bundle
+        run: flutter build appbundle --release
+
+      - name: Set release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_version="$(sed -n "s/^version:[[:space:]]*//p" pubspec.yaml | head -n 1 | tr -d "'\r")"
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+          echo "release_name=Backchat ${app_version}" >> "$GITHUB_OUTPUT"
+          {
+            echo 'release_notes<<EOF'
+            echo "Automated Google Play internal test build."
+            echo
+            echo "Version: ${app_version}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Google Play upload dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Upload to Google Play
+        env:
+          RELEASE_NOTES: ${{ steps.meta.outputs.release_notes }}
+        run: |
+          printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.txt"
+          python scripts/upload_to_google_play.py \
+            --service-account-json "$RUNNER_TEMP/google-play-service-account.json" \
+            --package-name "com.mysticalg.backchat" \
+            --aab-path "build/app/outputs/bundle/release/app-release.aab" \
+            --track "${{ inputs.track }}" \
+            --release-status "${{ inputs.release_status }}" \
+            --release-name "${{ steps.meta.outputs.release_name }}" \
+            --release-notes-file "$RUNNER_TEMP/release-notes.txt"
+
+      - name: Clean signing and Google Play credentials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -f android/key.properties
+          rm -f android/app/upload-keystore.jks
+          rm -f "$RUNNER_TEMP/google-play-service-account.json"
+          rm -f "$RUNNER_TEMP/release-notes.txt"

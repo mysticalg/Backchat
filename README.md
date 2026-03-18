@@ -96,6 +96,34 @@ secrets before Android release builds will pass:
 - `ANDROID_UPLOAD_KEY_ALIAS`
 - `ANDROID_UPLOAD_KEY_PASSWORD`
 
+## Google Play internal testing
+
+This repo also includes a manual workflow at
+[`publish-google-play-internal.yml`](/Users/drhoo/OneDrive/Documents/GitHub/Backchat/.github/workflows/publish-google-play-internal.yml)
+for uploading the signed Android App Bundle to Google Play.
+
+Before it will work, add this extra repository secret:
+
+- `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`
+
+That secret should contain the full JSON for a Google Cloud service account that
+has access to the app in Google Play Console API access.
+
+The workflow currently publishes package:
+
+```text
+com.mysticalg.backchat
+```
+
+Recommended first use:
+
+1. Create the app in Play Console for `com.mysticalg.backchat`.
+2. Enable Play Console API access and grant the service account release
+   permissions for the app.
+3. Run **Actions** -> **Publish Android to Google Play**.
+4. Choose `internal`.
+5. Type `PUBLISH` to confirm.
+
 ## GitHub Actions build pipeline
 
 This repo now includes a manual GitHub Actions workflow at `.github/workflows/build-artifacts.yml`.
