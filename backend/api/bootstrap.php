@@ -786,12 +786,17 @@ function bc_user_payload(array $row): array
     }
     $avatarUrl = (string)($row['avatar_url'] ?? '');
     $displayName = (string)($row['display_name'] ?? ($row['username'] ?? ''));
+    $status = (string)($row['status'] ?? 'online');
+    if (!in_array($status, ['online', 'offline', 'busy'], true)) {
+        $status = 'online';
+    }
     return [
         'id' => 'username:' . ($row['normalized_username'] ?? ''),
         'username' => (string)($row['username'] ?? ''),
         'displayName' => $displayName,
         'avatarUrl' => $avatarUrl,
         'provider' => $provider,
-        'status' => 'online',
+        'status' => $status,
+        'lastSeenAtUtc' => isset($row['last_seen_at']) ? (string)$row['last_seen_at'] : null,
     ];
 }

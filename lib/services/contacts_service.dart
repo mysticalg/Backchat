@@ -35,7 +35,9 @@ class ContactsService {
   Future<List<AppUser>> pullContactsFor(AppUser currentUser) async {
     if (_apiService.isConfigured) {
       try {
-        return await _apiService.fetchContacts();
+        final List<AppUser> contacts = await _apiService.fetchContacts();
+        await _writeContactsFor(currentUser.id, contacts);
+        return contacts;
       } catch (_) {
         // Fall back to local contact cache if API is unavailable.
       }
@@ -167,10 +169,12 @@ class ContactsService {
   Map<String, dynamic> _appUserToJson(AppUser user) {
     return <String, dynamic>{
       'id': user.id,
+      'username': user.username,
       'displayName': user.displayName,
       'avatarUrl': user.avatarUrl,
       'provider': user.provider.name,
       'status': user.status.name,
+      'lastSeenAtUtc': user.lastSeenAt?.toUtc().toIso8601String(),
     };
   }
 
@@ -191,11 +195,15 @@ class ContactsService {
 
     return AppUser(
       id: json['id']?.toString() ?? '',
+      username: json['username']?.toString() ?? '',
       displayName:
           json['displayName']?.toString() ?? json['username']?.toString() ?? '',
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
       status: status,
+      lastSeenAt: DateTime.tryParse(
+        json['lastSeenAtUtc']?.toString() ?? '',
+      )?.toLocal(),
     );
   }
 }

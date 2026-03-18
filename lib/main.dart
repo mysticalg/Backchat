@@ -33,6 +33,16 @@ class BackchatApp extends StatelessWidget {
   }
 }
 
+class _ConversationEntry {
+  const _ConversationEntry({
+    required this.message,
+    required this.text,
+  });
+
+  final ChatMessage message;
+  final String text;
+}
+
 class BackchatHomePage extends StatefulWidget {
   const BackchatHomePage({super.key});
 
@@ -40,15 +50,17 @@ class BackchatHomePage extends StatefulWidget {
   State<BackchatHomePage> createState() => _BackchatHomePageState();
 }
 
-class _BackchatHomePageState extends State<BackchatHomePage>
-    with TrayListener {
-  static const Duration _messagePollInterval = Duration(seconds: 2);
+class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
+  static const Duration _messagePollInterval = Duration(seconds: 1);
+  static const Duration _contactRefreshInterval = Duration(seconds: 8);
   static const String _plainTextTransportMode = 'plaintext_v1';
 
   final AuthService _authService = AuthService();
   final ContactsService _contactsService = ContactsService();
   final EncryptionService _encryptionService = EncryptionService();
   final MessagingService _messagingService = MessagingService();
+  final FocusNode _messageFocusNode = FocusNode();
+  final ScrollController _conversationScrollController = ScrollController();
 
   AppUser? _currentUser;
   List<AppUser> _contacts = <AppUser>[];
@@ -61,13 +73,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final TextEditingController _inviteUsernameController =
       TextEditingController();
   final TextEditingController _messageController = TextEditingController();
-  final List<String> _conversation = <String>[];
+  final List<_ConversationEntry> _conversation = <_ConversationEntry>[];
   bool _isAuthBusy = false;
   bool _isInviteBusy = false;
   bool _isCheckingSocialAuth = false;
   bool _isSyncingMessages = false;
+  bool _isLoadingContacts = false;
   String? _socialAuthWarning;
   Timer? _messagePollTimer;
+  Timer? _contactRefreshTimer;
 
   SecretKey? _sharedSecret;
 
@@ -82,11 +96,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   @override
   void dispose() {
     _stopMessagePolling();
+    _stopContactRefresh();
     _usernameController.dispose();
     _usernameRecoveryEmailController.dispose();
     _recoveryEmailController.dispose();
     _inviteUsernameController.dispose();
     _messageController.dispose();
+    _messageFocusNode.dispose();
+    _conversationScrollController.dispose();
     super.dispose();
   }
 
@@ -125,45 +142,53 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   Future<void> _loadContacts() async {
     final AppUser? currentUser = _currentUser;
-    if (currentUser == null) {
+    if (currentUser == null || _isLoadingContacts) {
       return;
     }
 
-    final String? previousSelectedId = _selectedContact?.id;
-    final List<AppUser> contacts =
-        await _contactsService.pullContactsFor(currentUser);
+    _isLoadingContacts = true;
+    try {
+      final String? previousSelectedId = _selectedContact?.id;
+      final List<AppUser> contacts =
+          await _contactsService.pullContactsFor(currentUser);
 
-    AppUser? selectedContact;
-    if (previousSelectedId != null) {
-      for (final AppUser contact in contacts) {
-        if (contact.id == previousSelectedId) {
-          selectedContact = contact;
-          break;
+      AppUser? selectedContact;
+      if (previousSelectedId != null) {
+        for (final AppUser contact in contacts) {
+          if (contact.id == previousSelectedId) {
+            selectedContact = contact;
+            break;
+          }
         }
       }
-    }
-    selectedContact ??= contacts.isNotEmpty ? contacts.first : null;
+      selectedContact ??= contacts.isNotEmpty ? contacts.first : null;
 
-    if (!mounted) {
-      return;
-    }
+      if (!mounted) {
+        return;
+      }
 
-    setState(() {
-      _contacts = contacts;
-      _selectedContact = selectedContact;
-    });
-    await _refreshConversation();
+      setState(() {
+        _contacts = contacts;
+        _selectedContact = selectedContact;
+      });
+      await _refreshConversation();
+    } finally {
+      _isLoadingContacts = false;
+    }
   }
 
   void _showAuthMessage(String message) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _activateUserSession(AppUser user) async {
     _stopMessagePolling();
-    _messagingService.reset();
+    _stopContactRefresh();
+    await _messagingService.activateForUser(user.id);
 
     if (!mounted) {
       return;
@@ -171,11 +196,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
     setState(() {
       _currentUser = user;
+      _contacts = <AppUser>[];
+      _selectedContact = null;
       _conversation.clear();
     });
 
     await _loadContacts();
     _startMessagePolling();
+    _startContactRefresh();
     await _syncMessages(showErrors: false);
   }
 
@@ -191,6 +219,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _messagePollTimer = null;
   }
 
+  void _startContactRefresh() {
+    _contactRefreshTimer?.cancel();
+    _contactRefreshTimer = Timer.periodic(_contactRefreshInterval, (_) {
+      _loadContacts();
+    });
+  }
+
+  void _stopContactRefresh() {
+    _contactRefreshTimer?.cancel();
+    _contactRefreshTimer = null;
+  }
+
   Future<void> _syncMessages({required bool showErrors}) async {
     final AppUser? currentUser = _currentUser;
     if (currentUser == null || _isSyncingMessages) {
@@ -202,7 +242,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       final List<ChatMessage> newMessages =
           await _messagingService.syncIncoming(currentUser.id);
       if (newMessages.isNotEmpty) {
-        await _refreshConversation();
+        await _loadContacts();
+        await _refreshConversation(scrollToBottom: true);
       }
     } on BackchatApiException catch (e) {
       if (showErrors) {
@@ -219,10 +260,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   Future<void> _selectContact(AppUser contact) async {
     setState(() => _selectedContact = contact);
-    await _refreshConversation();
+    await _refreshConversation(scrollToBottom: true);
+    if (mounted) {
+      _messageFocusNode.requestFocus();
+    }
   }
 
-  Future<void> _refreshConversation() async {
+  Future<void> _refreshConversation({bool scrollToBottom = false}) async {
     final AppUser? currentUser = _currentUser;
     final AppUser? selectedContact = _selectedContact;
     if (currentUser == null || selectedContact == null) {
@@ -233,21 +277,20 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
+    await _messagingService.markConversationRead(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+    );
     final List<ChatMessage> messages =
         await _messagingService.listForPair(currentUser.id, selectedContact.id);
-    final List<String> renderedConversation = <String>[];
+    final List<_ConversationEntry> renderedConversation =
+        <_ConversationEntry>[];
 
     for (final ChatMessage message in messages) {
-      final bool isMine = message.fromUserId == currentUser.id;
       final String text = await _decodeMessageText(message);
-      final String fromLabel = isMine
-          ? 'Me'
-          : _displayNameForUserId(
-              message.fromUserId,
-              fallback: selectedContact.displayName,
-            );
-      final String toLabel = isMine ? selectedContact.displayName : 'Me';
-      renderedConversation.add('$fromLabel -> $toLabel: $text');
+      renderedConversation.add(
+        _ConversationEntry(message: message, text: text),
+      );
     }
 
     if (!mounted ||
@@ -261,6 +304,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         ..clear()
         ..addAll(renderedConversation);
     });
+
+    if (scrollToBottom) {
+      _scrollConversationToBottom();
+    }
   }
 
   Future<String> _decodeMessageText(ChatMessage message) async {
@@ -331,8 +378,25 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return userId;
   }
 
+  void _scrollConversationToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_conversationScrollController.hasClients) {
+        return;
+      }
+      final double target =
+          _conversationScrollController.position.maxScrollExtent + 80;
+      _conversationScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   Future<void> _continueWithUsername() async {
-    if (_isAuthBusy) return;
+    if (_isAuthBusy) {
+      return;
+    }
 
     setState(() => _isAuthBusy = true);
     try {
@@ -353,15 +417,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             await _activateUserSession(result.user!);
           }
           _showAuthMessage(
-              'Username created and linked to your recovery email.');
+            'Username created and linked to your recovery email.',
+          );
           break;
         case UsernameSignInStatus.invalidUsername:
           _showAuthMessage(
-              'Choose 3-24 characters: letters, numbers, or underscore.');
+            'Choose 3-24 characters: letters, numbers, or underscore.',
+          );
           break;
         case UsernameSignInStatus.usernameNeedsRecoveryEmail:
           _showAuthMessage(
-              'That username is available. Add a recovery email to claim it.');
+            'That username is available. Add a recovery email to claim it.',
+          );
           break;
         case UsernameSignInStatus.invalidRecoveryEmail:
           _showAuthMessage('Enter a valid recovery email address.');
@@ -392,7 +459,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
     setState(() => _isCheckingSocialAuth = true);
     final String? warning = await _authService.socialOAuthStartupWarning();
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _socialAuthWarning = warning;
       _isCheckingSocialAuth = false;
@@ -403,7 +472,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     required Future<AppUser?> Function() signIn,
     required String providerLabel,
   }) async {
-    if (_isAuthBusy) return;
+    if (_isAuthBusy) {
+      return;
+    }
 
     setState(() => _isAuthBusy = true);
     try {
@@ -451,8 +522,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Future<void> _recoverUsername() async {
-    final String? username =
-        await _authService.recoverUsernameForEmail(_recoveryEmailController.text);
+    final String? username = await _authService
+        .recoverUsernameForEmail(_recoveryEmailController.text);
     if (username == null) {
       _showAuthMessage('No username found for that email.');
       return;
@@ -463,7 +534,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Future<void> _inviteByUsername() async {
-    if (_currentUser == null || _isInviteBusy) return;
+    if (_currentUser == null || _isInviteBusy) {
+      return;
+    }
 
     setState(() => _isInviteBusy = true);
     try {
@@ -482,7 +555,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           break;
         case InviteByUsernameStatus.alreadyContact:
           _showAuthMessage(
-              '${result.contact?.displayName} is already in your contacts.');
+            '${result.contact?.displayName} is already in your contacts.',
+          );
           break;
         case InviteByUsernameStatus.selfInvite:
           _showAuthMessage('You cannot add your own username as a contact.');
@@ -492,7 +566,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           break;
         case InviteByUsernameStatus.invalidUsername:
           _showAuthMessage(
-              'Enter a valid username (3-24 letters/numbers/underscore).');
+            'Enter a valid username (3-24 letters/numbers/underscore).',
+          );
           break;
         case InviteByUsernameStatus.serverUnavailable:
           _showAuthMessage(
@@ -510,14 +585,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   void _changeStatus(PresenceStatus status) {
-    if (_currentUser == null) return;
+    if (_currentUser == null) {
+      return;
+    }
     setState(() {
       _currentUser = _currentUser!.copyWith(status: status);
     });
   }
 
-  /// Used only for the local encryption demo path when the shared backend is
-  /// unavailable.
   List<int> _buildMessageAad({
     required String fromUserId,
     required String toUserId,
@@ -555,11 +630,19 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       );
     }
 
+    final DateTime sentAt = DateTime.now();
     final ChatMessage message = ChatMessage(
+      localId: [
+        'local',
+        currentUser.id,
+        selectedContact.id,
+        sentAt.toUtc().microsecondsSinceEpoch.toString(),
+      ].join(':'),
       fromUserId: currentUser.id,
       toUserId: selectedContact.id,
       cipherText: cipherText,
-      sentAt: DateTime.now(),
+      sentAt: sentAt,
+      isRead: true,
     );
 
     try {
@@ -573,7 +656,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
 
     _messageController.clear();
-    await _refreshConversation();
+    await _refreshConversation(scrollToBottom: true);
     await _syncMessages(showErrors: false);
   }
 
@@ -732,48 +815,274 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Widget _buildChatView(AppUser user) {
     return Padding(
       padding: const EdgeInsets.all(16),
+      child: LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          final bool wideLayout = constraints.maxWidth >= 980;
+          final Widget conversationPane = Expanded(
+            flex: wideLayout ? 7 : 1,
+            child: _buildConversationPane(user),
+          );
+          final Widget contactsPane = SizedBox(
+            width: wideLayout ? 320 : double.infinity,
+            height: wideLayout ? double.infinity : 340,
+            child: _buildContactsPane(user),
+          );
+
+          if (wideLayout) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                conversationPane,
+                const SizedBox(width: 16),
+                contactsPane,
+              ],
+            );
+          }
+
+          return Column(
+            children: <Widget>[
+              conversationPane,
+              const SizedBox(height: 16),
+              contactsPane,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildConversationPane(AppUser user) {
+    final AppUser? selectedContact = _selectedContact;
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    CircleAvatar(
+                      backgroundImage: user.avatarUrl.isNotEmpty
+                          ? NetworkImage(user.avatarUrl)
+                          : null,
+                      child: user.avatarUrl.isEmpty
+                          ? const Icon(Icons.person)
+                          : null,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            user.displayName,
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          Text(
+                            user.username.isNotEmpty
+                                ? '@${user.username}'
+                                : 'Signed in',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    DropdownButtonHideUnderline(
+                      child: DropdownButton<PresenceStatus>(
+                        value: user.status,
+                        items: PresenceStatus.values
+                            .map(
+                              (PresenceStatus status) =>
+                                  DropdownMenuItem<PresenceStatus>(
+                                value: status,
+                                child: Text(status.name),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (PresenceStatus? value) {
+                          if (value != null) {
+                            _changeStatus(value);
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: selectedContact == null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                'No contact selected',
+                                style: theme.textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Choose someone from the contact list to load your local conversation history.',
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                          )
+                        : Row(
+                            children: <Widget>[
+                              CircleAvatar(
+                                radius: 20,
+                                backgroundImage: selectedContact
+                                        .avatarUrl.isNotEmpty
+                                    ? NetworkImage(selectedContact.avatarUrl)
+                                    : null,
+                                child: selectedContact.avatarUrl.isEmpty
+                                    ? Text(
+                                        selectedContact
+                                            .displayName.characters.first
+                                            .toUpperCase(),
+                                      )
+                                    : null,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    Text(
+                                      selectedContact.displayName,
+                                      style: theme.textTheme.titleSmall,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: <Widget>[
+                                        _buildPresenceDot(
+                                            selectedContact.status),
+                                        const SizedBox(width: 8),
+                                        Flexible(
+                                          child: Text(
+                                            _contactStatusLabel(
+                                                selectedContact),
+                                            style: theme.textTheme.bodySmall,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+                if (_messagingService.isRemoteTransportEnabled) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Messages sync through AWS while history is also cached locally on this computer.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: selectedContact == null
+                ? _buildEmptyConversationState(
+                    title: 'Open a conversation',
+                    subtitle:
+                        'Select a contact from the right-hand pane to load previous messages and start chatting.',
+                  )
+                : _conversation.isEmpty
+                    ? _buildEmptyConversationState(
+                        title: 'No messages yet',
+                        subtitle:
+                            'Your conversation history is stored locally on this machine once you start chatting.',
+                      )
+                    : ListView.builder(
+                        controller: _conversationScrollController,
+                        padding: const EdgeInsets.all(18),
+                        itemCount: _conversation.length,
+                        itemBuilder: (BuildContext context, int index) {
+                          return _buildMessageBubble(
+                            entry: _conversation[index],
+                            currentUser: user,
+                          );
+                        },
+                      ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    focusNode: _messageFocusNode,
+                    onSubmitted: (_) => _sendMessage(),
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: selectedContact == null
+                          ? 'Select a contact to start chatting'
+                          : 'Type a message for ${selectedContact.displayName}',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton.icon(
+                  onPressed: selectedContact == null ? null : _sendMessage,
+                  icon: const Icon(Icons.send),
+                  label: const Text('Send'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContactsPane(AppUser user) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Row(
-            children: <Widget>[
-              CircleAvatar(
-                backgroundImage:
-                    user.avatarUrl.isNotEmpty ? NetworkImage(user.avatarUrl) : null,
-                child: user.avatarUrl.isEmpty ? const Icon(Icons.person) : null,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  user.displayName,
-                  style: Theme.of(context).textTheme.titleMedium,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Contacts',
+                  style: theme.textTheme.titleMedium,
                 ),
-              ),
-              DropdownButton<PresenceStatus>(
-                value: user.status,
-                items: PresenceStatus.values
-                    .map(
-                      (PresenceStatus status) => DropdownMenuItem<PresenceStatus>(
-                        value: status,
-                        child: Text(status.name),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (PresenceStatus? value) {
-                  if (value != null) {
-                    _changeStatus(value);
-                  }
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text('Contacts (${_contacts.length})'),
-          const SizedBox(height: 8),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: TextField(
+                const SizedBox(height: 4),
+                Text(
+                  '${_contacts.length} saved contacts',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 14),
+                TextField(
                   controller: _inviteUsernameController,
                   decoration: const InputDecoration(
                     hintText: 'Invite by username',
@@ -781,75 +1090,275 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                     isDense: true,
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _isInviteBusy ? null : _inviteByUsername,
-                icon: _isInviteBusy
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.person_add),
-                label: const Text('Invite'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (_messagingService.isRemoteTransportEnabled)
-            Text(
-              'Messages sync through the shared backend in this build.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          if (_messagingService.isRemoteTransportEnabled)
-            const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            children: _contacts
-                .map(
-                  (AppUser contact) => ChoiceChip(
-                    label: Text(contact.displayName),
-                    selected: _selectedContact?.id == contact.id,
-                    onSelected: (_) => _selectContact(contact),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _isInviteBusy ? null : _inviteByUsername,
+                    icon: _isInviteBusy
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.person_add),
+                    label: const Text('Add contact'),
                   ),
-                )
-                .toList(),
+                ),
+              ],
+            ),
           ),
-          const Divider(height: 24),
+          const Divider(height: 1),
           Expanded(
-            child: ListView.builder(
-              itemCount: _conversation.length,
-              itemBuilder: (BuildContext context, int index) => ListTile(
-                leading: const Icon(Icons.chat_bubble_outline),
-                title: Text(_conversation[index]),
-              ),
-            ),
-          ),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: TextField(
-                  controller: _messageController,
-                  decoration: const InputDecoration(
-                    hintText: 'Type a message',
-                    border: OutlineInputBorder(),
+            child: _contacts.isEmpty
+                ? _buildEmptyConversationState(
+                    title: 'No contacts yet',
+                    subtitle:
+                        'Add someone by username to see them here with online status and unread counts.',
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(10),
+                    itemCount: _contacts.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (BuildContext context, int index) {
+                      final AppUser contact = _contacts[index];
+                      return _buildContactTile(
+                        currentUser: user,
+                        contact: contact,
+                      );
+                    },
                   ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Tooltip(
-                message: 'Send message',
-                child: FilledButton.icon(
-                  onPressed: _sendMessage,
-                  icon: const Icon(Icons.send),
-                  label: const Text('Send'),
-                ),
-              ),
-            ],
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildContactTile({
+    required AppUser currentUser,
+    required AppUser contact,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final int unreadCount = _messagingService.unreadCountForContact(
+      currentUserId: currentUser.id,
+      contactUserId: contact.id,
+    );
+    final bool selected = _selectedContact?.id == contact.id;
+
+    return Material(
+      color: selected
+          ? theme.colorScheme.primaryContainer
+          : theme.colorScheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _selectContact(contact),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: <Widget>[
+              Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  CircleAvatar(
+                    backgroundImage: contact.avatarUrl.isNotEmpty
+                        ? NetworkImage(contact.avatarUrl)
+                        : null,
+                    child: contact.avatarUrl.isEmpty
+                        ? Text(
+                            contact.displayName.characters.first.toUpperCase())
+                        : null,
+                  ),
+                  Positioned(
+                    right: -1,
+                    bottom: -1,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: _buildPresenceDot(contact.status),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      contact.displayName,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _contactStatusLabel(contact),
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              if (unreadCount > 0) _buildUnreadBadge(unreadCount),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble({
+    required _ConversationEntry entry,
+    required AppUser currentUser,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final bool isMine = entry.message.fromUserId == currentUser.id;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Align(
+        alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            crossAxisAlignment:
+                isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                isMine
+                    ? 'You'
+                    : _displayNameForUserId(
+                        entry.message.fromUserId,
+                        fallback: _selectedContact?.displayName,
+                      ),
+                style: theme.textTheme.labelMedium,
+              ),
+              const SizedBox(height: 4),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: isMine
+                      ? theme.colorScheme.primaryContainer
+                      : theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  child: Text(entry.text),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _formatMessageTimestamp(entry.message.sentAt),
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyConversationState({
+    required String title,
+    required String subtitle,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              Icons.chat_bubble_outline,
+              size: 34,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: theme.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: theme.textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUnreadBadge(int unreadCount) {
+    final ThemeData theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primary,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        unreadCount > 99 ? '99+' : unreadCount.toString(),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onPrimary,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPresenceDot(PresenceStatus status) {
+    final Color color = switch (status) {
+      PresenceStatus.online => Colors.green,
+      PresenceStatus.busy => Colors.orange,
+      PresenceStatus.offline => Colors.grey,
+    };
+
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+      ),
+    );
+  }
+
+  String _contactStatusLabel(AppUser contact) {
+    return switch (contact.status) {
+      PresenceStatus.online => 'Online now',
+      PresenceStatus.busy => 'Busy',
+      PresenceStatus.offline => contact.lastSeenAt == null
+          ? 'Offline'
+          : 'Last active ${_relativeLastSeen(contact.lastSeenAt!)}',
+    };
+  }
+
+  String _relativeLastSeen(DateTime value) {
+    final Duration delta = DateTime.now().difference(value);
+    if (delta.inSeconds < 60) {
+      return 'just now';
+    }
+    if (delta.inMinutes < 60) {
+      return '${delta.inMinutes}m ago';
+    }
+    if (delta.inHours < 24) {
+      return '${delta.inHours}h ago';
+    }
+    return '${delta.inDays}d ago';
+  }
+
+  String _formatMessageTimestamp(DateTime value) {
+    final DateTime localValue = value.toLocal();
+    final String hour = localValue.hour.toString().padLeft(2, '0');
+    final String minute = localValue.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 }

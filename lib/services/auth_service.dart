@@ -81,8 +81,7 @@ class AuthService {
   })  : _apiService = apiService ?? BackchatApiService(),
         _urlLauncher = urlLauncher ?? _defaultUrlLauncher,
         _processLauncher = processLauncher ?? _defaultProcessLauncher,
-        _browserPlatform =
-            browserPlatform ?? _detectBrowserLaunchPlatform();
+        _browserPlatform = browserPlatform ?? _detectBrowserLaunchPlatform();
 
   static const String _usernameAccountsStorageKey = 'username_accounts_v1';
   static final RegExp _usernamePattern = RegExp(r'^[a-zA-Z0-9_]{3,24}$');
@@ -346,6 +345,7 @@ class AuthService {
       displayName: account.username,
       avatarUrl: '',
       provider: AuthProvider.username,
+      username: account.username,
     );
   }
 
@@ -366,6 +366,7 @@ class AuthService {
       displayName: displayName,
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
+      username: username,
       status: PresenceStatus.online,
     );
   }
@@ -374,8 +375,7 @@ class AuthService {
     if (!_apiService.isConfigured) {
       throw const BackchatApiException(
         status: 'api_not_configured',
-        message:
-            'Social login requires BACKCHAT_API_BASE_URL in this build.',
+        message: 'Social login requires BACKCHAT_API_BASE_URL in this build.',
       );
     }
     final SocialOAuthStartResult start =
@@ -473,5 +473,4 @@ class AuthService {
       return false;
     }
   }
-
 }

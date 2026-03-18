@@ -194,7 +194,8 @@ class BackchatApiService implements BackchatApiClient {
       requiresAuth: false,
     );
     final String state = payload['state']?.toString() ?? '';
-    final String authorizationUrl = payload['authorizationUrl']?.toString() ?? '';
+    final String authorizationUrl =
+        payload['authorizationUrl']?.toString() ?? '';
     if (state.isEmpty || authorizationUrl.isEmpty) {
       throw const BackchatApiException(
         status: 'oauth_start_invalid',
@@ -301,12 +302,16 @@ class BackchatApiService implements BackchatApiClient {
         .whereType<Map<String, dynamic>>()
         .map(
           (Map<String, dynamic> row) => ChatMessage(
+            localId: _localIdForRemoteMessage(row),
             fromUserId: row['fromUserId']?.toString() ?? '',
             toUserId: currentUserId,
             cipherText: row['cipherText']?.toString() ?? '',
             sentAt: _parseApiUtcDateTime(
               row['sentAtUtc']?.toString(),
             ),
+            remoteId: row['id'] is int
+                ? row['id'] as int
+                : int.tryParse(row['id']?.toString() ?? ''),
           ),
         )
         .where(
@@ -436,11 +441,11 @@ class BackchatApiService implements BackchatApiClient {
 
   String _nonJsonApiResponseMessage(Uri uri, http.Response response) {
     final String body = response.body;
-    final String contentType = response.headers['content-type']?.toLowerCase() ?? '';
+    final String contentType =
+        response.headers['content-type']?.toLowerCase() ?? '';
 
     final String loweredBody = body.toLowerCase();
-    final bool looksLikeAntiBotInterstitial =
-        loweredBody.contains('/aes.js') ||
+    final bool looksLikeAntiBotInterstitial = loweredBody.contains('/aes.js') ||
         loweredBody.contains('site requires javascript to work') ||
         loweredBody.contains('__test=');
 
@@ -450,8 +455,8 @@ class BackchatApiService implements BackchatApiClient {
           'Move the API to a host without this protection.';
     }
 
-    final bool looksLikeHtml =
-        contentType.contains('text/html') || loweredBody.trimLeft().startsWith('<');
+    final bool looksLikeHtml = contentType.contains('text/html') ||
+        loweredBody.trimLeft().startsWith('<');
     if (looksLikeHtml) {
       return 'API returned HTML instead of JSON at $uri. '
           'Check BACKCHAT_API_BASE_URL and ensure it points to the API root URL '
@@ -482,16 +487,26 @@ class BackchatApiService implements BackchatApiClient {
     final String normalizedUsername = username.toLowerCase();
     final String providerName =
         json['provider']?.toString() ?? AuthProvider.username.name;
+    final String statusName =
+        json['status']?.toString() ?? PresenceStatus.online.name;
     final AuthProvider provider = AuthProvider.values.firstWhere(
       (AuthProvider value) => value.name == providerName,
       orElse: () => AuthProvider.username,
     );
+    final PresenceStatus status = PresenceStatus.values.firstWhere(
+      (PresenceStatus value) => value.name == statusName,
+      orElse: () => PresenceStatus.online,
+    );
     return AppUser(
       id: json['id']?.toString() ?? 'username:$normalizedUsername',
+      username: username,
       displayName: displayName,
       avatarUrl: json['avatarUrl']?.toString() ?? '',
       provider: provider,
-      status: PresenceStatus.online,
+      status: status,
+      lastSeenAt: _tryParseApiUtcDateTime(
+        json['lastSeenAtUtc']?.toString(),
+      ),
     );
   }
 
@@ -506,5 +521,31 @@ class BackchatApiService implements BackchatApiClient {
     } on FormatException {
       return DateTime.now();
     }
+  }
+
+  DateTime? _tryParseApiUtcDateTime(String? value) {
+    final String normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    try {
+      return DateTime.parse('${normalized.replaceFirst(' ', 'T')}Z').toLocal();
+    } on FormatException {
+      return null;
+    }
+  }
+
+  String _localIdForRemoteMessage(Map<String, dynamic> row) {
+    final int? remoteId = row['id'] is int
+        ? row['id'] as int
+        : int.tryParse(row['id']?.toString() ?? '');
+    if (remoteId != null) {
+      return 'remote:$remoteId';
+    }
+
+    final String fromUserId = row['fromUserId']?.toString() ?? '';
+    final String sentAt = row['sentAtUtc']?.toString() ?? '';
+    final String cipherText = row['cipherText']?.toString() ?? '';
+    return 'remote:$fromUserId:$sentAt:${cipherText.hashCode}';
   }
 }
