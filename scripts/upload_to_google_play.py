@@ -43,8 +43,13 @@ def main() -> None:
     if args.release_notes_file:
         release_notes = Path(args.release_notes_file).read_text(encoding="utf-8")
 
-    credentials = service_account.Credentials.from_service_account_file(
-        str(service_account_path),
+    # Windows-downloaded JSON keys can include a UTF-8 BOM, so parse the file
+    # ourselves with utf-8-sig before building the Google credentials.
+    service_account_info = json.loads(
+        service_account_path.read_text(encoding="utf-8-sig")
+    )
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
         scopes=[ANDROID_PUBLISHER_SCOPE],
     )
 
