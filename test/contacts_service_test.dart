@@ -1,4 +1,5 @@
 import 'package:backchat/models/app_user.dart';
+import 'package:backchat/models/call_models.dart';
 import 'package:backchat/services/auth_service.dart';
 import 'package:backchat/services/backchat_api_service.dart';
 import 'package:backchat/services/contacts_service.dart';
@@ -69,6 +70,28 @@ class _DisabledApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<CallServerConfig> fetchCallConfig() {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
@@ -78,6 +101,17 @@ class _DisabledApiClient implements BackchatApiClient {
 
   @override
   Future<SocialOAuthStartResult> startSocialOAuth(String provider) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  }) {
     throw UnimplementedError();
   }
 }

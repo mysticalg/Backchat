@@ -15,6 +15,9 @@ It includes:
 - Contact discovery from providers (where APIs allow)
 - End-to-end encryption primitives for messages
 - Presence state (Online / Offline / Busy)
+- Desktop taskbar unread badges and contact-side unread counters
+- Local conversation history caching per computer
+- One-to-one voice/video calling with advanced direct/VPN routing controls
 - Desktop tray integration for messenger-style quick access
 - Starter packaging commands for `.exe`, `.dmg`, Linux bundles, and Android artifacts
 
@@ -112,6 +115,11 @@ Set these repository secrets first:
   - `BACKCHAT_X_OAUTH_CLIENT_ID`
   - `BACKCHAT_X_OAUTH_CLIENT_SECRET`
   - `BACKCHAT_X_OAUTH_REDIRECT_URI`
+- Optional WebRTC relay secrets:
+  - `BACKCHAT_CALL_STUN_URLS`
+  - `BACKCHAT_CALL_TURN_URLS`
+  - `BACKCHAT_CALL_TURN_USERNAME`
+  - `BACKCHAT_CALL_TURN_CREDENTIAL`
 
 Run it:
 
@@ -159,6 +167,21 @@ flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://<your-api-hos
 ## Presence model
 
 Backchat tracks user-selected status (`online`, `offline`, `busy`) and can map provider presence where API access exists.
+
+## Voice and video calls
+
+Backchat now includes one-to-one voice/video calling over WebRTC:
+
+- Signaling goes through the PHP API on AWS.
+- Media attempts peer-to-peer routing first.
+- Advanced settings let users prefer direct/VPN paths, force direct-only, or force relay-only.
+- TURN relay fallback is optional and controlled by:
+  - `BACKCHAT_CALL_STUN_URLS`
+  - `BACKCHAT_CALL_TURN_URLS`
+  - `BACKCHAT_CALL_TURN_USERNAME`
+  - `BACKCHAT_CALL_TURN_CREDENTIAL`
+
+If TURN is not configured, direct/VPN routes can still work, but some internet-to-internet calls may fail.
 
 ## Direct computer-to-computer messaging (P2P)
 

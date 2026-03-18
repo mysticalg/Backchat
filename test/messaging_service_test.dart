@@ -1,4 +1,5 @@
 import 'package:backchat/models/app_user.dart';
+import 'package:backchat/models/call_models.dart';
 import 'package:backchat/models/chat_message.dart';
 import 'package:backchat/services/backchat_api_service.dart';
 import 'package:backchat/services/messaging_service.dart';
@@ -91,7 +92,39 @@ class _FakeApiClient implements BackchatApiClient {
   }
 
   @override
+  Future<CallServerConfig> fetchCallConfig() async => const CallServerConfig();
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) async {
+    return const PollCallSignalsResult(
+      nextSinceId: 0,
+      signals: <CallSignalEvent>[],
+    );
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) async {}
+
+  @override
   Future<SocialOAuthStartResult> startSocialOAuth(String provider) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  }) async {
     throw UnimplementedError();
   }
 }

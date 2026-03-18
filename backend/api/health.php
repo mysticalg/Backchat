@@ -15,6 +15,8 @@ try {
         'messages',
         'oauth_pending_states',
         'oauth_identities',
+        'call_sessions',
+        'call_signal_events',
     ];
     $missingTables = [];
     foreach ($requiredTables as $table) {

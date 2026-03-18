@@ -7,6 +7,7 @@ This folder contains a lightweight PHP + MySQL API for:
 - Invite by username
 - Contact sync
 - Basic encrypted message relay endpoints
+- WebRTC call signaling for one-to-one voice/video calls
 
 ## Files
 
@@ -23,6 +24,10 @@ This folder contains a lightweight PHP + MySQL API for:
 - `contacts.php`
 - `send_message.php`
 - `poll_messages.php`
+- `call_config.php`
+- `start_call.php`
+- `send_call_signal.php`
+- `poll_call_signals.php`
 - `health.php`
 
 ## Deploy
@@ -45,6 +50,11 @@ This folder contains a lightweight PHP + MySQL API for:
       - `BACKCHAT_GOOGLE_OAUTH_CLIENT_ID`, `BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET`, `BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI`
       - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID`, `BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET`, `BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI`
       - `BACKCHAT_X_OAUTH_CLIENT_ID`, `BACKCHAT_X_OAUTH_CLIENT_SECRET`, `BACKCHAT_X_OAUTH_REDIRECT_URI`
+      - Optional calling transport settings:
+        - `BACKCHAT_CALL_STUN_URLS`
+        - `BACKCHAT_CALL_TURN_URLS`
+        - `BACKCHAT_CALL_TURN_USERNAME`
+        - `BACKCHAT_CALL_TURN_CREDENTIAL`
 3. Call `POST /backchat-api/setup.php` with JSON:
    - `{"setupKey":"<your setup_key>"}`
 4. Use `health.php` to verify DB connectivity.
@@ -67,5 +77,10 @@ Required repo secrets:
   - `BACKCHAT_X_OAUTH_CLIENT_ID`
   - `BACKCHAT_X_OAUTH_CLIENT_SECRET`
   - `BACKCHAT_X_OAUTH_REDIRECT_URI`
+- Optional TURN/STUN secrets for voice/video calls:
+  - `BACKCHAT_CALL_STUN_URLS`
+  - `BACKCHAT_CALL_TURN_URLS`
+  - `BACKCHAT_CALL_TURN_USERNAME`
+  - `BACKCHAT_CALL_TURN_CREDENTIAL`
 
 Push backend changes to `main` to deploy automatically, or run the workflow manually and type `DEPLOY` in the confirmation input. Set `run_setup` to `true` only when you want the workflow to call `setup.php`.

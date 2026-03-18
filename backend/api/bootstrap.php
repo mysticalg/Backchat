@@ -90,6 +90,10 @@ function bc_config(): array
         'x_oauth_client_id' => '',
         'x_oauth_client_secret' => '',
         'x_oauth_redirect_uri' => '',
+        'call_stun_urls' => '',
+        'call_turn_urls' => '',
+        'call_turn_username' => '',
+        'call_turn_credential' => '',
     ];
 
     $envConfig = array_filter([
@@ -108,6 +112,10 @@ function bc_config(): array
         'x_oauth_client_id' => bc_first_env(['BACKCHAT_X_OAUTH_CLIENT_ID']),
         'x_oauth_client_secret' => bc_first_env(['BACKCHAT_X_OAUTH_CLIENT_SECRET']),
         'x_oauth_redirect_uri' => bc_first_env(['BACKCHAT_X_OAUTH_REDIRECT_URI']),
+        'call_stun_urls' => bc_first_env(['BACKCHAT_CALL_STUN_URLS']),
+        'call_turn_urls' => bc_first_env(['BACKCHAT_CALL_TURN_URLS']),
+        'call_turn_username' => bc_first_env(['BACKCHAT_CALL_TURN_USERNAME']),
+        'call_turn_credential' => bc_first_env(['BACKCHAT_CALL_TURN_CREDENTIAL']),
     ], static fn($value) => $value !== null);
 
     $config = array_merge($optional, $fileConfig, $envConfig);
@@ -816,4 +824,190 @@ function bc_user_payload(array $row): array
         'status' => $status,
         'lastSeenAtUtc' => isset($row['last_seen_at']) ? (string)$row['last_seen_at'] : null,
     ];
+}
+
+function bc_csv_to_list(string $value): array
+{
+    $parts = array_map('trim', explode(',', $value));
+    return array_values(array_filter($parts, static fn(string $item): bool => $item !== ''));
+}
+
+function bc_call_type_is_valid(string $value): bool
+{
+    return in_array($value, ['audio', 'video'], true);
+}
+
+function bc_call_signal_type_is_valid(string $value): bool
+{
+    return in_array($value, ['offer', 'answer', 'candidate', 'ringing', 'rejected', 'ended', 'busy'], true);
+}
+
+function bc_call_preferences_sanitize(array $payload): array
+{
+    $connectionMode = trim((string)($payload['connectionMode'] ?? 'auto'));
+    if (!in_array($connectionMode, ['auto', 'directPreferred', 'directOnly', 'relayOnly'], true)) {
+        $connectionMode = 'auto';
+    }
+
+    return [
+        'connectionMode' => $connectionMode,
+        'shareLocalCandidates' => ($payload['shareLocalCandidates'] ?? true) === true,
+        'sharePublicCandidates' => ($payload['sharePublicCandidates'] ?? true) === true,
+        'allowRelayFallback' => ($payload['allowRelayFallback'] ?? true) === true,
+    ];
+}
+
+function bc_call_preferences_from_json(?string $raw): array
+{
+    if (!is_string($raw) || trim($raw) === '') {
+        return bc_call_preferences_sanitize([]);
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return bc_call_preferences_sanitize([]);
+    }
+
+    return bc_call_preferences_sanitize($decoded);
+}
+
+function bc_call_ice_config(): array
+{
+    $cfg = bc_config();
+    $stunUrls = bc_csv_to_list((string)($cfg['call_stun_urls'] ?? ''));
+    if (empty($stunUrls)) {
+        $stunUrls = [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+        ];
+    }
+
+    $iceServers = [
+        ['urls' => $stunUrls],
+    ];
+
+    $turnUrls = bc_csv_to_list((string)($cfg['call_turn_urls'] ?? ''));
+    $turnUsername = trim((string)($cfg['call_turn_username'] ?? ''));
+    $turnCredential = trim((string)($cfg['call_turn_credential'] ?? ''));
+    $turnConfigured = !empty($turnUrls) && $turnUsername !== '' && $turnCredential !== '';
+    if ($turnConfigured) {
+        $iceServers[] = [
+            'urls' => $turnUrls,
+            'username' => $turnUsername,
+            'credential' => $turnCredential,
+        ];
+    }
+
+    return [
+        'iceServers' => $iceServers,
+        'turnConfigured' => $turnConfigured,
+        'recommendedPollIntervalMs' => 750,
+    ];
+}
+
+function bc_find_contact_user_or_fail(int $authUserId, string $username): array
+{
+    $normalized = bc_normalize_username($username);
+    $stmt = bc_pdo()->prepare(
+        'SELECT u.id, u.username, u.normalized_username, u.avatar_url, u.quote_text
+         FROM contacts c
+         INNER JOIN users u ON u.id = c.contact_user_id
+         WHERE c.user_id = :user_id
+           AND u.normalized_username = :normalized_username
+         LIMIT 1'
+    );
+    $stmt->execute([
+        ':user_id' => $authUserId,
+        ':normalized_username' => $normalized,
+    ]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        bc_fail('not_found', 'Contact username not found.', 404);
+    }
+    return $row;
+}
+
+function bc_call_session_for_user_or_fail(int $callId, int $authUserId): array
+{
+    $stmt = bc_pdo()->prepare(
+        'SELECT *
+         FROM call_sessions
+         WHERE id = :id
+           AND (caller_user_id = :user_id OR callee_user_id = :user_id)
+         LIMIT 1'
+    );
+    $stmt->execute([
+        ':id' => $callId,
+        ':user_id' => $authUserId,
+    ]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        bc_fail('call_not_found', 'Call session not found.', 404);
+    }
+    return $row;
+}
+
+function bc_call_other_participant_user_id(array $callSession, int $authUserId): int
+{
+    if ((int)$callSession['caller_user_id'] === $authUserId) {
+        return (int)$callSession['callee_user_id'];
+    }
+    return (int)$callSession['caller_user_id'];
+}
+
+function bc_call_peer_payload(array $callSession, int $authUserId): array
+{
+    $peerUserId = bc_call_other_participant_user_id($callSession, $authUserId);
+    $stmt = bc_pdo()->prepare(
+        'SELECT id, username, normalized_username, avatar_url, quote_text
+         FROM users
+         WHERE id = :id
+         LIMIT 1'
+    );
+    $stmt->execute([':id' => $peerUserId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        bc_fail('user_not_found', 'Call peer was not found.', 404);
+    }
+    return bc_user_payload($row);
+}
+
+function bc_call_summary_payload(array $callSession, int $authUserId): array
+{
+    return [
+        'id' => (int)$callSession['id'],
+        'kind' => (string)$callSession['kind'],
+        'status' => (string)$callSession['status'],
+        'createdAtUtc' => (string)$callSession['created_at'],
+        'answeredAtUtc' => isset($callSession['answered_at']) ? (string)$callSession['answered_at'] : null,
+        'endedAtUtc' => isset($callSession['ended_at']) ? (string)$callSession['ended_at'] : null,
+        'settings' => bc_call_preferences_from_json(
+            isset($callSession['preferences_json']) ? (string)$callSession['preferences_json'] : null
+        ),
+        'peer' => bc_call_peer_payload($callSession, $authUserId),
+    ];
+}
+
+function bc_call_insert_event(
+    int $callId,
+    int $senderUserId,
+    int $recipientUserId,
+    string $eventType,
+    ?array $payload
+): int {
+    $payloadJson = $payload === null ? null : json_encode($payload, JSON_UNESCAPED_SLASHES);
+    $stmt = bc_pdo()->prepare(
+        'INSERT INTO call_signal_events
+         (call_session_id, sender_user_id, recipient_user_id, event_type, payload_json, created_at)
+         VALUES
+         (:call_session_id, :sender_user_id, :recipient_user_id, :event_type, :payload_json, UTC_TIMESTAMP())'
+    );
+    $stmt->execute([
+        ':call_session_id' => $callId,
+        ':sender_user_id' => $senderUserId,
+        ':recipient_user_id' => $recipientUserId,
+        ':event_type' => $eventType,
+        ':payload_json' => $payloadJson,
+    ]);
+    return (int)bc_pdo()->lastInsertId();
 }

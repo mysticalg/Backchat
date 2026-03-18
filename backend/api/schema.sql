@@ -95,3 +95,37 @@ CREATE TABLE IF NOT EXISTS messages (
     CONSTRAINT fk_messages_sender_user FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_messages_recipient_user FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS call_sessions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    caller_user_id BIGINT UNSIGNED NOT NULL,
+    callee_user_id BIGINT UNSIGNED NOT NULL,
+    kind ENUM('audio', 'video') NOT NULL,
+    status ENUM('ringing', 'active', 'ended', 'rejected', 'busy', 'cancelled', 'failed') NOT NULL DEFAULT 'ringing',
+    preferences_json TEXT NULL,
+    answered_at DATETIME NULL,
+    ended_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_call_sessions_caller_status (caller_user_id, status),
+    KEY idx_call_sessions_callee_status (callee_user_id, status),
+    CONSTRAINT fk_call_sessions_caller_user FOREIGN KEY (caller_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_call_sessions_callee_user FOREIGN KEY (callee_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS call_signal_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    call_session_id BIGINT UNSIGNED NOT NULL,
+    sender_user_id BIGINT UNSIGNED NOT NULL,
+    recipient_user_id BIGINT UNSIGNED NOT NULL,
+    event_type ENUM('offer', 'answer', 'candidate', 'ringing', 'rejected', 'ended', 'busy') NOT NULL,
+    payload_json MEDIUMTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_call_signal_recipient_id_id (recipient_user_id, id),
+    KEY idx_call_signal_session_id_id (call_session_id, id),
+    CONSTRAINT fk_call_signal_session FOREIGN KEY (call_session_id) REFERENCES call_sessions(id) ON DELETE CASCADE,
+    CONSTRAINT fk_call_signal_sender_user FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_call_signal_recipient_user FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

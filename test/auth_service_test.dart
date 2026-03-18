@@ -1,4 +1,5 @@
 import 'package:backchat/models/app_user.dart';
+import 'package:backchat/models/call_models.dart';
 import 'package:backchat/models/chat_message.dart';
 import 'package:backchat/services/auth_service.dart';
 import 'package:backchat/services/backchat_api_service.dart';
@@ -73,6 +74,39 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
     required String toUsername,
     required String cipherText,
     String? clientMessageId,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<CallServerConfig> fetchCallConfig() async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
   }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -159,6 +193,27 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   }) async {}
 
   @override
+  Future<CallServerConfig> fetchCallConfig() async => const CallServerConfig();
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) async {
+    return const PollCallSignalsResult(
+      nextSinceId: 0,
+      signals: <CallSignalEvent>[],
+    );
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) async {}
+
+  @override
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
@@ -171,6 +226,17 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
       state: 'test-state',
       authorizationUrl: 'https://example.com/oauth/start',
     );
+  }
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  }) async {
+    throw UnimplementedError();
   }
 }
 

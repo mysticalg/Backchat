@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_user.dart';
+import '../models/call_models.dart';
 import '../models/chat_message.dart';
 
 class BackchatApiException implements Exception {
@@ -106,6 +107,27 @@ abstract class BackchatApiClient {
     required String toUsername,
     required String cipherText,
     String? clientMessageId,
+  });
+
+  Future<CallServerConfig> fetchCallConfig();
+
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  });
+
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  });
+
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId,
+    int limit,
   });
 
   Future<PollMessagesResult> pollMessages({
@@ -323,6 +345,98 @@ class BackchatApiService implements BackchatApiClient {
         if (clientMessageId != null && clientMessageId.isNotEmpty)
           'clientMessageId': clientMessageId,
       },
+    );
+  }
+
+  @override
+  Future<CallServerConfig> fetchCallConfig() async {
+    final Map<String, dynamic> payload = await _getJson('/call_config.php');
+    final List<dynamic> rows = payload['iceServers'] is List<dynamic>
+        ? payload['iceServers'] as List<dynamic>
+        : <dynamic>[];
+    return CallServerConfig(
+      iceServers: rows
+          .whereType<Map<String, dynamic>>()
+          .map(CallIceServer.fromJson)
+          .where((CallIceServer server) => server.urls.isNotEmpty)
+          .toList(),
+      turnConfigured: payload['turnConfigured'] == true,
+      recommendedPollInterval: Duration(
+        milliseconds: payload['recommendedPollIntervalMs'] is int
+            ? payload['recommendedPollIntervalMs'] as int
+            : int.tryParse(
+                    payload['recommendedPollIntervalMs']?.toString() ?? '') ??
+                750,
+      ),
+    );
+  }
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  }) async {
+    final Map<String, dynamic> payload = await _postJson(
+      '/start_call.php',
+      <String, dynamic>{
+        'toUsername': toUsername,
+        'kind': kind.name,
+        'offer': <String, dynamic>{
+          'type': offerType,
+          'sdp': offerSdp,
+        },
+        'settings': settings.toJson(),
+      },
+    );
+    final Object? callPayload = payload['call'];
+    if (callPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'call_invalid',
+        message: 'Call start response is missing the call payload.',
+      );
+    }
+    return _callSummaryFromApiMap(callPayload);
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) async {
+    await _postJson(
+      '/send_call_signal.php',
+      <String, dynamic>{
+        'callId': callId,
+        'type': type.name,
+        if (payload != null) 'payload': payload,
+      },
+    );
+  }
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) async {
+    final int safeLimit = limit < 1 ? 1 : (limit > 200 ? 200 : limit);
+    final Map<String, dynamic> payload = await _getJson(
+      '/poll_call_signals.php?sinceId=$sinceId&limit=$safeLimit',
+    );
+    final List<dynamic> rows = payload['signals'] is List<dynamic>
+        ? payload['signals'] as List<dynamic>
+        : <dynamic>[];
+    return PollCallSignalsResult(
+      nextSinceId: payload['nextSinceId'] is int
+          ? payload['nextSinceId'] as int
+          : int.tryParse(payload['nextSinceId']?.toString() ?? '') ?? sinceId,
+      signals: rows
+          .whereType<Map<String, dynamic>>()
+          .map(_callSignalEventFromApiMap)
+          .toList(),
     );
   }
 
@@ -550,6 +664,66 @@ class BackchatApiService implements BackchatApiClient {
       lastSeenAt: _tryParseApiUtcDateTime(
         json['lastSeenAtUtc']?.toString(),
       ),
+    );
+  }
+
+  CallSummary _callSummaryFromApiMap(Map<String, dynamic> json) {
+    final String kindName = json['kind']?.toString() ?? CallKind.audio.name;
+    final CallKind kind = CallKind.values.firstWhere(
+      (CallKind value) => value.name == kindName,
+      orElse: () => CallKind.audio,
+    );
+    final Object? peerPayload = json['peer'];
+    if (peerPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'call_peer_missing',
+        message: 'Call summary is missing peer information.',
+      );
+    }
+    final Object? settingsPayload = json['settings'];
+    return CallSummary(
+      id: json['id'] is int
+          ? json['id'] as int
+          : int.tryParse(json['id']?.toString() ?? '') ?? 0,
+      kind: kind,
+      status: json['status']?.toString() ?? 'ringing',
+      settings: settingsPayload is Map<String, dynamic>
+          ? CallSettings.fromJson(settingsPayload)
+          : CallSettings.defaults,
+      peer: _appUserFromApiMap(peerPayload),
+      createdAt: _parseApiUtcDateTime(json['createdAtUtc']?.toString()),
+      answeredAt: _tryParseApiUtcDateTime(json['answeredAtUtc']?.toString()),
+      endedAt: _tryParseApiUtcDateTime(json['endedAtUtc']?.toString()),
+    );
+  }
+
+  CallSignalEvent _callSignalEventFromApiMap(Map<String, dynamic> json) {
+    final String typeName =
+        json['type']?.toString() ?? CallSignalType.candidate.name;
+    final CallSignalType type = CallSignalType.values.firstWhere(
+      (CallSignalType value) => value.name == typeName,
+      orElse: () => CallSignalType.candidate,
+    );
+    final Object? callPayload = json['call'];
+    if (callPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'call_signal_invalid',
+        message: 'Call signal is missing the call summary.',
+      );
+    }
+    return CallSignalEvent(
+      id: json['id'] is int
+          ? json['id'] as int
+          : int.tryParse(json['id']?.toString() ?? '') ?? 0,
+      callId: json['callId'] is int
+          ? json['callId'] as int
+          : int.tryParse(json['callId']?.toString() ?? '') ?? 0,
+      type: type,
+      payload: json['payload'] is Map<String, dynamic>
+          ? json['payload'] as Map<String, dynamic>
+          : <String, dynamic>{},
+      call: _callSummaryFromApiMap(callPayload),
+      createdAt: _parseApiUtcDateTime(json['createdAtUtc']?.toString()),
     );
   }
 

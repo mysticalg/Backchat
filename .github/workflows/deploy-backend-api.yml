@@ -80,6 +80,10 @@ jobs:
           BACKCHAT_X_OAUTH_CLIENT_ID: ${{ secrets.BACKCHAT_X_OAUTH_CLIENT_ID }}
           BACKCHAT_X_OAUTH_CLIENT_SECRET: ${{ secrets.BACKCHAT_X_OAUTH_CLIENT_SECRET }}
           BACKCHAT_X_OAUTH_REDIRECT_URI: ${{ secrets.BACKCHAT_X_OAUTH_REDIRECT_URI }}
+          BACKCHAT_CALL_STUN_URLS: ${{ secrets.BACKCHAT_CALL_STUN_URLS }}
+          BACKCHAT_CALL_TURN_URLS: ${{ secrets.BACKCHAT_CALL_TURN_URLS }}
+          BACKCHAT_CALL_TURN_USERNAME: ${{ secrets.BACKCHAT_CALL_TURN_USERNAME }}
+          BACKCHAT_CALL_TURN_CREDENTIAL: ${{ secrets.BACKCHAT_CALL_TURN_CREDENTIAL }}
         run: |
           jq -n \
             --arg setupKey "$BACKCHAT_SETUP_KEY" \
@@ -92,6 +96,10 @@ jobs:
             --arg xClientId "$BACKCHAT_X_OAUTH_CLIENT_ID" \
             --arg xClientSecret "$BACKCHAT_X_OAUTH_CLIENT_SECRET" \
             --arg xRedirectUri "$BACKCHAT_X_OAUTH_REDIRECT_URI" \
+            --arg callStunUrls "$BACKCHAT_CALL_STUN_URLS" \
+            --arg callTurnUrls "$BACKCHAT_CALL_TURN_URLS" \
+            --arg callTurnUsername "$BACKCHAT_CALL_TURN_USERNAME" \
+            --arg callTurnCredential "$BACKCHAT_CALL_TURN_CREDENTIAL" \
             '[
               {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_SETUP_KEY",Value:$setupKey},
               {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_GOOGLE_OAUTH_CLIENT_ID",Value:$googleClientId},
@@ -102,7 +110,11 @@ jobs:
               {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI",Value:$facebookRedirectUri},
               {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_CLIENT_ID",Value:$xClientId},
               {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_CLIENT_SECRET",Value:$xClientSecret},
-              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_REDIRECT_URI",Value:$xRedirectUri}
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_REDIRECT_URI",Value:$xRedirectUri},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_STUN_URLS",Value:$callStunUrls},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_URLS",Value:$callTurnUrls},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_USERNAME",Value:$callTurnUsername},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_CREDENTIAL",Value:$callTurnCredential}
             ]' > option-settings.json
 
       - name: Resolve Elastic Beanstalk storage bucket

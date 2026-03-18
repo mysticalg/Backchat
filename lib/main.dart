@@ -5,13 +5,16 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'models/app_user.dart';
+import 'models/call_models.dart';
 import 'models/chat_message.dart';
 import 'services/auth_service.dart';
 import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
+import 'services/call_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
 import 'services/messaging_service.dart';
@@ -61,6 +64,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   final EncryptionService _encryptionService = EncryptionService();
   final MessagingService _messagingService = MessagingService();
   final AppWindowService _appWindowService = AppWindowService();
+  final CallService _callService = CallService();
   final BackchatApiClient _profileApi = BackchatApiService();
   final FocusNode _messageFocusNode = FocusNode();
   final ScrollController _conversationScrollController = ScrollController();
@@ -91,6 +95,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   @override
   void initState() {
     super.initState();
+    _callService.addListener(_handleCallServiceChanged);
     _bootstrapCrypto();
     _configureTrayIfDesktop();
     _runSocialAuthStartupCheck();
@@ -100,6 +105,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   void dispose() {
     _stopMessagePolling();
     _stopContactRefresh();
+    _callService.removeListener(_handleCallServiceChanged);
+    _callService.dispose();
     _usernameController.dispose();
     _usernameRecoveryEmailController.dispose();
     _recoveryEmailController.dispose();
@@ -108,6 +115,34 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _messageFocusNode.dispose();
     _conversationScrollController.dispose();
     super.dispose();
+  }
+
+  void _handleCallServiceChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    final ActiveCallState callState = _callService.state;
+    final AppUser? peer = callState.peer;
+    if (peer != null) {
+      final int contactIndex =
+          _contacts.indexWhere((AppUser contact) => contact.id == peer.id);
+      if (contactIndex >= 0) {
+        final AppUser mergedContact = _contacts[contactIndex].copyWith(
+          displayName: peer.displayName,
+          avatarUrl: peer.avatarUrl,
+          username: peer.username.isNotEmpty
+              ? peer.username
+              : _contacts[contactIndex].username,
+          quote: peer.quote,
+        );
+        _contacts[contactIndex] = mergedContact;
+        if (callState.isIncoming || callState.isInProgress) {
+          _selectedContact = mergedContact;
+        }
+      }
+    }
+    setState(() {});
   }
 
   Future<void> _bootstrapCrypto() async {
@@ -193,6 +228,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _stopMessagePolling();
     _stopContactRefresh();
     await _messagingService.activateForUser(user.id);
+    await _callService.activateForUser(user);
 
     if (!mounted) {
       return;
@@ -421,6 +457,174 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         ? 0
         : _messagingService.totalUnreadCountForUser(currentUser.id);
     await _appWindowService.setUnreadCount(unreadCount);
+  }
+
+  Future<void> _startCall(CallKind kind) async {
+    final AppUser? selectedContact = _selectedContact;
+    if (selectedContact == null) {
+      return;
+    }
+
+    try {
+      await _callService.startOutgoingCall(peer: selectedContact, kind: kind);
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage('Could not start the ${kind.name} call right now.');
+    }
+  }
+
+  Future<void> _answerIncomingCall() async {
+    try {
+      await _callService.answerIncomingCall();
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage('Could not answer the call.');
+    }
+  }
+
+  Future<void> _rejectIncomingCall() async {
+    try {
+      await _callService.rejectIncomingCall();
+    } catch (_) {
+      _showAuthMessage('Could not decline the call cleanly.');
+    }
+  }
+
+  Future<void> _endCall() async {
+    try {
+      await _callService.endCall();
+    } catch (_) {
+      _showAuthMessage('Could not end the call cleanly.');
+    }
+  }
+
+  Future<void> _toggleCallMute() async {
+    await _callService.toggleMute();
+  }
+
+  Future<void> _toggleCallVideo() async {
+    await _callService.toggleVideoEnabled();
+  }
+
+  Future<void> _editCallSettings() async {
+    CallSettings draft = _callService.settings;
+
+    final CallSettings? nextSettings = await showDialog<CallSettings>(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setDialogState) {
+            return AlertDialog(
+              title: const Text('Advanced call routing'),
+              content: SizedBox(
+                width: 520,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text(
+                        'Use Auto for most people. Direct/VPN options prefer peer-to-peer routes over your own secure network when available.',
+                      ),
+                      const SizedBox(height: 16),
+                      DropdownButtonFormField<CallConnectionMode>(
+                        initialValue: draft.connectionMode,
+                        decoration: const InputDecoration(
+                          labelText: 'Connection mode',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: CallConnectionMode.values
+                            .map(
+                              (CallConnectionMode mode) =>
+                                  DropdownMenuItem<CallConnectionMode>(
+                                value: mode,
+                                child: Text(_callModeLabel(mode)),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (CallConnectionMode? value) {
+                          if (value == null) {
+                            return;
+                          }
+                          setDialogState(() {
+                            draft = draft.copyWith(connectionMode: value);
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      SwitchListTile.adaptive(
+                        value: draft.shareLocalCandidates,
+                        onChanged: (bool value) {
+                          setDialogState(() {
+                            draft =
+                                draft.copyWith(shareLocalCandidates: value);
+                          });
+                        },
+                        title: const Text('Share local/VPN addresses'),
+                        subtitle: const Text(
+                          'Use this for LAN or VPN peers that can route private addresses directly.',
+                        ),
+                      ),
+                      SwitchListTile.adaptive(
+                        value: draft.sharePublicCandidates,
+                        onChanged: (bool value) {
+                          setDialogState(() {
+                            draft =
+                                draft.copyWith(sharePublicCandidates: value);
+                          });
+                        },
+                        title: const Text('Share public internet addresses'),
+                        subtitle: const Text(
+                          'Enable this when peers know their public routing is reachable and safe to expose.',
+                        ),
+                      ),
+                      SwitchListTile.adaptive(
+                        value: draft.allowRelayFallback,
+                        onChanged: (bool value) {
+                          setDialogState(() {
+                            draft = draft.copyWith(allowRelayFallback: value);
+                          });
+                        },
+                        title: const Text('Allow TURN relay fallback'),
+                        subtitle: Text(
+                          _callService.serverConfig.turnConfigured
+                              ? 'Recommended outside trusted networks so calls can still connect.'
+                              : 'TURN relay is not configured yet on the backend.',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _buildCallDiagnosticsBlock(
+                        diagnostics: _callService.state.diagnostics,
+                        showTitle: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(draft),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (nextSettings == null) {
+      return;
+    }
+
+    await _callService.updateSettings(nextSettings);
+    _showAuthMessage('Advanced call routing updated.');
   }
 
   Future<void> _continueWithUsername() async {
@@ -1057,6 +1261,11 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                       ),
                     ),
                     IconButton(
+                      tooltip: 'Call routing settings',
+                      onPressed: _editCallSettings,
+                      icon: const Icon(Icons.settings_ethernet_outlined),
+                    ),
+                    IconButton(
                       tooltip: 'Edit profile',
                       onPressed: _editProfile,
                       icon: const Icon(Icons.edit_outlined),
@@ -1158,10 +1367,38 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                                   ],
                                 ),
                               ),
+                              const SizedBox(width: 8),
+                              Column(
+                                children: <Widget>[
+                                  IconButton.filledTonal(
+                                    tooltip: 'Start voice call',
+                                    onPressed: _callService.state.isInProgress &&
+                                            _callService.state.peer?.id !=
+                                                selectedContact.id
+                                        ? null
+                                        : () => _startCall(CallKind.audio),
+                                    icon: const Icon(Icons.call_outlined),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  IconButton.filledTonal(
+                                    tooltip: 'Start video call',
+                                    onPressed: _callService.state.isInProgress &&
+                                            _callService.state.peer?.id !=
+                                                selectedContact.id
+                                        ? null
+                                        : () => _startCall(CallKind.video),
+                                    icon: const Icon(Icons.videocam_outlined),
+                                  ),
+                                ],
+                              ),
                             ],
                           ),
                   ),
                 ),
+                if (!_callService.state.isIdle) ...<Widget>[
+                  const SizedBox(height: 16),
+                  _buildCallPanel(),
+                ],
                 if (_messagingService.isRemoteTransportEnabled) ...<Widget>[
                   const SizedBox(height: 8),
                   Text(
@@ -1260,6 +1497,313 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         ],
       ),
     );
+  }
+
+  Widget _buildCallPanel() {
+    final ThemeData theme = Theme.of(context);
+    final ActiveCallState callState = _callService.state;
+    final AppUser? peer = callState.peer;
+    if (peer == null) {
+      return const SizedBox.shrink();
+    }
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(
+                  callState.kind == CallKind.video
+                      ? Icons.videocam
+                      : Icons.graphic_eq,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        '${callState.kind.name.toUpperCase()} call with ${peer.displayName}',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        callState.statusText,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _buildCallMediaStage(callState),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: _buildCallActionButtons(callState),
+            ),
+            const SizedBox(height: 12),
+            _buildCallDiagnosticsBlock(
+              diagnostics: callState.diagnostics,
+              showTitle: false,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCallMediaStage(ActiveCallState callState) {
+    final ThemeData theme = Theme.of(context);
+    final AppUser? peer = callState.peer;
+    if (peer == null) {
+      return const SizedBox.shrink();
+    }
+
+    final bool showRemoteVideo =
+        callState.kind == CallKind.video && callState.hasRemoteVideo;
+    return SizedBox(
+      height: 220,
+      child: Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.inverseSurface,
+                ),
+                child: showRemoteVideo
+                    ? RTCVideoView(
+                        _callService.remoteRenderer,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      )
+                    : Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            CircleAvatar(
+                              radius: 28,
+                              backgroundImage: peer.avatarUrl.isNotEmpty
+                                  ? NetworkImage(peer.avatarUrl)
+                                  : null,
+                              child: peer.avatarUrl.isEmpty
+                                  ? Text(
+                                      peer.displayName.characters.first
+                                          .toUpperCase(),
+                                      style:
+                                          theme.textTheme.headlineSmall?.copyWith(
+                                        color: theme.colorScheme.onPrimary,
+                                      ),
+                                    )
+                                  : null,
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              callState.statusText,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.colorScheme.onInverseSurface,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+            ),
+          ),
+          if (callState.kind == CallKind.video &&
+              callState.isVideoEnabled &&
+              _callService.localRenderer.srcObject != null)
+            Positioned(
+              right: 12,
+              bottom: 12,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: SizedBox(
+                  width: 96,
+                  height: 132,
+                  child: RTCVideoView(
+                    _callService.localRenderer,
+                    mirror: true,
+                    objectFit:
+                        RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildCallActionButtons(ActiveCallState callState) {
+    if (callState.isIncoming) {
+      return <Widget>[
+        FilledButton.icon(
+          onPressed: _answerIncomingCall,
+          icon: Icon(
+            callState.kind == CallKind.video ? Icons.videocam : Icons.call,
+          ),
+          label: Text(
+            callState.kind == CallKind.video ? 'Answer video' : 'Answer call',
+          ),
+        ),
+        OutlinedButton.icon(
+          onPressed: _rejectIncomingCall,
+          icon: const Icon(Icons.call_end),
+          label: const Text('Decline'),
+        ),
+      ];
+    }
+
+    if (callState.isOutgoing) {
+      return <Widget>[
+        OutlinedButton.icon(
+          onPressed: _endCall,
+          icon: const Icon(Icons.call_end),
+          label: const Text('Cancel'),
+        ),
+      ];
+    }
+
+    if (callState.lifecycle == CallLifecycle.connecting ||
+        callState.lifecycle == CallLifecycle.active) {
+      return <Widget>[
+        FilledButton.tonalIcon(
+          onPressed: _toggleCallMute,
+          icon: Icon(callState.isMuted ? Icons.mic_off : Icons.mic),
+          label: Text(callState.isMuted ? 'Unmute' : 'Mute'),
+        ),
+        if (callState.kind == CallKind.video)
+          FilledButton.tonalIcon(
+            onPressed: _toggleCallVideo,
+            icon: Icon(
+              callState.isVideoEnabled ? Icons.videocam : Icons.videocam_off,
+            ),
+            label: Text(
+              callState.isVideoEnabled ? 'Camera on' : 'Camera off',
+            ),
+          ),
+        OutlinedButton.icon(
+          onPressed: _endCall,
+          icon: const Icon(Icons.call_end),
+          label: const Text('Hang up'),
+        ),
+      ];
+    }
+
+    return <Widget>[
+      OutlinedButton(
+        onPressed: () => _callService.clearEndedState(),
+        child: const Text('Dismiss'),
+      ),
+    ];
+  }
+
+  Widget _buildCallDiagnosticsBlock({
+    required CallDiagnostics diagnostics,
+    required bool showTitle,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            if (showTitle) ...<Widget>[
+              Text(
+                'Diagnostics',
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+            ],
+            _buildDiagnosticsLine(
+              'Mode',
+              _callModeLabel(_callService.settings.connectionMode),
+            ),
+            _buildDiagnosticsLine('Route', diagnostics.routeSummary),
+            _buildDiagnosticsLine(
+              'Connection',
+              diagnostics.connectionState,
+            ),
+            _buildDiagnosticsLine(
+              'Local/VPN IPs',
+              diagnostics.localHostAddresses.isEmpty
+                  ? 'none discovered'
+                  : diagnostics.localHostAddresses.join(', '),
+            ),
+            _buildDiagnosticsLine(
+              'Public IPs',
+              diagnostics.publicAddresses.isEmpty
+                  ? 'none discovered'
+                  : diagnostics.publicAddresses.join(', '),
+            ),
+            _buildDiagnosticsLine(
+              'Relay IPs',
+              diagnostics.relayAddresses.isEmpty
+                  ? diagnostics.turnConfigured
+                      ? 'none in use'
+                      : 'TURN not configured'
+                  : diagnostics.relayAddresses.join(', '),
+            ),
+            _buildDiagnosticsLine(
+              'Remote candidate types',
+              diagnostics.remoteCandidateTypes.isEmpty
+                  ? 'none yet'
+                  : diagnostics.remoteCandidateTypes.join(', '),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDiagnosticsLine(String label, String value) {
+    final ThemeData theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: RichText(
+        text: TextSpan(
+          style: theme.textTheme.bodySmall,
+          children: <InlineSpan>[
+            TextSpan(
+              text: '$label: ',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            TextSpan(text: value),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _callModeLabel(CallConnectionMode mode) {
+    return switch (mode) {
+      CallConnectionMode.auto => 'Auto',
+      CallConnectionMode.directPreferred => 'Direct/VPN preferred',
+      CallConnectionMode.directOnly => 'Direct/VPN only',
+      CallConnectionMode.relayOnly => 'Relay only',
+    };
   }
 
   Widget _buildContactsPane(AppUser user) {
