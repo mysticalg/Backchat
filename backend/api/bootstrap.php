@@ -46,6 +46,23 @@ function bc_read_json_body(): array
     return $decoded;
 }
 
+function bc_first_env(array $keys): ?string
+{
+    foreach ($keys as $key) {
+        $value = getenv($key);
+        if ($value !== false && trim((string)$value) !== '') {
+            return trim((string)$value);
+        }
+
+        $serverValue = $_SERVER[$key] ?? ($_ENV[$key] ?? null);
+        if (is_string($serverValue) && trim($serverValue) !== '') {
+            return trim($serverValue);
+        }
+    }
+
+    return null;
+}
+
 function bc_config(): array
 {
     static $config = null;
@@ -53,22 +70,16 @@ function bc_config(): array
         return $config;
     }
 
+    $fileConfig = [];
     $configPath = __DIR__ . '/config.php';
-    if (!file_exists($configPath)) {
-        bc_fail('server_config_missing', 'Server config.php is missing.', 500);
-    }
-
-    $loaded = require $configPath;
-    if (!is_array($loaded)) {
-        bc_fail('server_config_invalid', 'Server config.php must return an array.', 500);
-    }
-
-    $required = ['db_host', 'db_port', 'db_name', 'db_user', 'db_pass', 'setup_key'];
-    foreach ($required as $key) {
-        if (!array_key_exists($key, $loaded)) {
-            bc_fail('server_config_invalid', "Missing config key: {$key}", 500);
+    if (file_exists($configPath)) {
+        $loaded = require $configPath;
+        if (!is_array($loaded)) {
+            bc_fail('server_config_invalid', 'Server config.php must return an array.', 500);
         }
+        $fileConfig = $loaded;
     }
+
     $optional = [
         'google_oauth_client_id' => '',
         'google_oauth_client_secret' => '',
@@ -80,7 +91,39 @@ function bc_config(): array
         'x_oauth_client_secret' => '',
         'x_oauth_redirect_uri' => '',
     ];
-    $config = array_merge($optional, $loaded);
+
+    $envConfig = array_filter([
+        'db_host' => bc_first_env(['BACKCHAT_DB_HOST', 'RDS_HOSTNAME']),
+        'db_port' => bc_first_env(['BACKCHAT_DB_PORT', 'RDS_PORT']),
+        'db_name' => bc_first_env(['BACKCHAT_DB_NAME', 'RDS_DB_NAME']),
+        'db_user' => bc_first_env(['BACKCHAT_DB_USER', 'RDS_USERNAME']),
+        'db_pass' => bc_first_env(['BACKCHAT_DB_PASS', 'RDS_PASSWORD']),
+        'setup_key' => bc_first_env(['BACKCHAT_SETUP_KEY', 'SETUP_KEY']),
+        'google_oauth_client_id' => bc_first_env(['BACKCHAT_GOOGLE_OAUTH_CLIENT_ID']),
+        'google_oauth_client_secret' => bc_first_env(['BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET']),
+        'google_oauth_redirect_uri' => bc_first_env(['BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI']),
+        'facebook_oauth_client_id' => bc_first_env(['BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID']),
+        'facebook_oauth_client_secret' => bc_first_env(['BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET']),
+        'facebook_oauth_redirect_uri' => bc_first_env(['BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI']),
+        'x_oauth_client_id' => bc_first_env(['BACKCHAT_X_OAUTH_CLIENT_ID']),
+        'x_oauth_client_secret' => bc_first_env(['BACKCHAT_X_OAUTH_CLIENT_SECRET']),
+        'x_oauth_redirect_uri' => bc_first_env(['BACKCHAT_X_OAUTH_REDIRECT_URI']),
+    ], static fn($value) => $value !== null);
+
+    $config = array_merge($optional, $fileConfig, $envConfig);
+
+    $required = ['db_host', 'db_port', 'db_name', 'db_user', 'db_pass', 'setup_key'];
+    foreach ($required as $key) {
+        if (!array_key_exists($key, $config) || trim((string)$config[$key]) === '') {
+            bc_fail(
+                'server_config_missing',
+                'Server configuration is incomplete. Set Elastic Beanstalk environment variables or provide config.php.',
+                500
+            );
+        }
+    }
+
+    $config['db_port'] = (int)$config['db_port'];
     return $config;
 }
 

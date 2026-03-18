@@ -2,7 +2,21 @@
 declare(strict_types=1);
 
 /**
- * Copy this file to config.php on the server and fill in real credentials.
+ * Copy this file to config.php and fill in real credentials if you are not
+ * using environment variables.
+ *
+ * On AWS Elastic Beanstalk, the backend also supports these environment
+ * variables and can run without config.php:
+ * - BACKCHAT_DB_HOST / RDS_HOSTNAME
+ * - BACKCHAT_DB_PORT / RDS_PORT
+ * - BACKCHAT_DB_NAME / RDS_DB_NAME
+ * - BACKCHAT_DB_USER / RDS_USERNAME
+ * - BACKCHAT_DB_PASS / RDS_PASSWORD
+ * - BACKCHAT_SETUP_KEY
+ * - BACKCHAT_GOOGLE_OAUTH_CLIENT_ID / _SECRET / _REDIRECT_URI
+ * - BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID / _SECRET / _REDIRECT_URI
+ * - BACKCHAT_X_OAUTH_CLIENT_ID / _SECRET / _REDIRECT_URI
+ *
  * Keep config.php out of source control.
  */
 return [

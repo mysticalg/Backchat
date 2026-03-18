@@ -28,13 +28,23 @@ This folder contains a lightweight PHP + MySQL API for:
 ## Deploy
 
 1. Upload all files to your host folder (for example `htdocs/backchat-api`).
-2. Create `config.php` on the server from `config.php.example`.
-   - For social login, fill provider OAuth keys:
-     - `google_oauth_client_id`, `google_oauth_client_secret`, `google_oauth_redirect_uri`
-     - `facebook_oauth_client_id`, `facebook_oauth_client_secret`, `facebook_oauth_redirect_uri`
-     - `x_oauth_client_id`, `x_oauth_client_secret`, `x_oauth_redirect_uri`
-   - Set each redirect URI to your deployed callback URL, for example:
-     - `https://your-domain/backchat-api/auth_oauth_callback.php`
+2. Create `config.php` on the server from `config.php.example`, or set equivalent environment variables.
+    - For social login, fill provider OAuth keys:
+      - `google_oauth_client_id`, `google_oauth_client_secret`, `google_oauth_redirect_uri`
+      - `facebook_oauth_client_id`, `facebook_oauth_client_secret`, `facebook_oauth_redirect_uri`
+      - `x_oauth_client_id`, `x_oauth_client_secret`, `x_oauth_redirect_uri`
+    - Set each redirect URI to your deployed callback URL, for example:
+      - `https://your-domain/backchat-api/auth_oauth_callback.php`
+    - Supported environment variables:
+      - `BACKCHAT_DB_HOST` or `RDS_HOSTNAME`
+      - `BACKCHAT_DB_PORT` or `RDS_PORT`
+      - `BACKCHAT_DB_NAME` or `RDS_DB_NAME`
+      - `BACKCHAT_DB_USER` or `RDS_USERNAME`
+      - `BACKCHAT_DB_PASS` or `RDS_PASSWORD`
+      - `BACKCHAT_SETUP_KEY`
+      - `BACKCHAT_GOOGLE_OAUTH_CLIENT_ID`, `BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET`, `BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI`
+      - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID`, `BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET`, `BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI`
+      - `BACKCHAT_X_OAUTH_CLIENT_ID`, `BACKCHAT_X_OAUTH_CLIENT_SECRET`, `BACKCHAT_X_OAUTH_REDIRECT_URI`
 3. Call `POST /backchat-api/setup.php` with JSON:
    - `{"setupKey":"<your setup_key>"}`
 4. Use `health.php` to verify DB connectivity.
@@ -45,9 +55,17 @@ Workflow: `.github/workflows/deploy-backend-api.yml`
 
 Required repo secrets:
 
-- `BACKEND_FTP_SERVER`
-- `BACKEND_FTP_USERNAME`
-- `BACKEND_FTP_PASSWORD`
-- `BACKEND_FTP_SERVER_DIR`
+- `AWS_ROLE_TO_ASSUME`
+- `BACKCHAT_SETUP_KEY`
+- Optional OAuth secrets:
+  - `BACKCHAT_GOOGLE_OAUTH_CLIENT_ID`
+  - `BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI`
+  - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID`
+  - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI`
+  - `BACKCHAT_X_OAUTH_CLIENT_ID`
+  - `BACKCHAT_X_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_X_OAUTH_REDIRECT_URI`
 
-When you run the workflow manually, type `DEPLOY` in the confirmation input.
+Push backend changes to `main` to deploy automatically, or run the workflow manually and type `DEPLOY` in the confirmation input. Set `run_setup` to `true` only when you want the workflow to call `setup.php`.

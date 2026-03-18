@@ -96,21 +96,29 @@ To run it:
 
 ## GitHub Actions backend deploy
 
-This repo also includes a manual deploy workflow at `.github/workflows/deploy-backend-api.yml` for pushing `backend/api/*` live.
+This repo includes an Elastic Beanstalk deploy workflow at `.github/workflows/deploy-backend-api.yml` for pushing `backend/api/*` live.
 
 Set these repository secrets first:
 
-- `BACKEND_FTP_SERVER` (for example `ftpupload.net`)
-- `BACKEND_FTP_USERNAME`
-- `BACKEND_FTP_PASSWORD`
-- `BACKEND_FTP_SERVER_DIR` (for example `/htdocs/backchat-api/`)
+- `AWS_ROLE_TO_ASSUME`
+- `BACKCHAT_SETUP_KEY`
+- Optional OAuth secrets:
+  - `BACKCHAT_GOOGLE_OAUTH_CLIENT_ID`
+  - `BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI`
+  - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID`
+  - `BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI`
+  - `BACKCHAT_X_OAUTH_CLIENT_ID`
+  - `BACKCHAT_X_OAUTH_CLIENT_SECRET`
+  - `BACKCHAT_X_OAUTH_REDIRECT_URI`
 
 Run it:
 
-1. Push your changes to GitHub.
-2. Open **Actions** → **Deploy Backend API**.
-3. Click **Run workflow**.
-4. In the confirmation box, type `DEPLOY`.
+1. Push backend changes to `main` to deploy automatically.
+2. Or open **Actions** -> **Deploy Backend API** and run it manually.
+3. For manual production runs, type `DEPLOY` in the confirmation box.
+4. Set `run_setup` to `true` only when you want the workflow to call `setup.php`.
 
 ## OAuth setup
 

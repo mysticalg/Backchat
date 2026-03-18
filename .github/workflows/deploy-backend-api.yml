@@ -1,44 +1,172 @@
 name: Deploy Backend API
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - backend/api/**
+      - .github/workflows/deploy-backend-api.yml
   workflow_dispatch:
     inputs:
       confirm_production:
         description: Type DEPLOY to confirm production backend deployment
         required: true
         default: ""
+      run_setup:
+        description: Run setup.php after deployment
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy-backend-api:
-    if: ${{ inputs.confirm_production == 'DEPLOY' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.confirm_production == 'DEPLOY' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: eu-west-2
+      EB_APPLICATION_NAME: backchat
+      EB_ENVIRONMENT_NAME: Backchat-env
+      BACKEND_BASE_URL: http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Validate required secrets
         env:
-          FTP_SERVER: ${{ secrets.BACKEND_FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.BACKEND_FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.BACKEND_FTP_PASSWORD }}
-          FTP_SERVER_DIR: ${{ secrets.BACKEND_FTP_SERVER_DIR }}
+          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          BACKCHAT_SETUP_KEY: ${{ secrets.BACKCHAT_SETUP_KEY }}
         run: |
-          test -n "$FTP_SERVER" || (echo "Missing secret BACKEND_FTP_SERVER" && exit 1)
-          test -n "$FTP_USERNAME" || (echo "Missing secret BACKEND_FTP_USERNAME" && exit 1)
-          test -n "$FTP_PASSWORD" || (echo "Missing secret BACKEND_FTP_PASSWORD" && exit 1)
-          test -n "$FTP_SERVER_DIR" || (echo "Missing secret BACKEND_FTP_SERVER_DIR" && exit 1)
+          test -n "$AWS_ROLE_TO_ASSUME" || (echo "Missing secret AWS_ROLE_TO_ASSUME" && exit 1)
+          test -n "$BACKCHAT_SETUP_KEY" || (echo "Missing secret BACKCHAT_SETUP_KEY" && exit 1)
 
-      - name: Deploy backend/api via FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          server: ${{ secrets.BACKEND_FTP_SERVER }}
-          username: ${{ secrets.BACKEND_FTP_USERNAME }}
-          password: ${{ secrets.BACKEND_FTP_PASSWORD }}
-          local-dir: ./backend/api/
-          server-dir: ${{ secrets.BACKEND_FTP_SERVER_DIR }}
-          protocol: ftp
-          dangerous-clean-slate: false
-          exclude: |
-            **/.git*
-            **/.git*/**
-            config.php
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+      - name: Create deployment bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_label="backend-api-${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}"
+          mkdir -p deploy/backend-api
+          rsync -a --delete --exclude 'config.php' backend/api/ deploy/backend-api/
+          (
+            cd deploy/backend-api
+            zip -qr "../../${version_label}.zip" .
+          )
+          echo "version_label=${version_label}" >> "$GITHUB_OUTPUT"
+          echo "bundle_name=${version_label}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build Elastic Beanstalk environment settings
+        shell: bash
+        env:
+          BACKCHAT_SETUP_KEY: ${{ secrets.BACKCHAT_SETUP_KEY }}
+          BACKCHAT_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.BACKCHAT_GOOGLE_OAUTH_CLIENT_ID }}
+          BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET }}
+          BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI }}
+          BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID: ${{ secrets.BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID }}
+          BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET: ${{ secrets.BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET }}
+          BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI: ${{ secrets.BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI }}
+          BACKCHAT_X_OAUTH_CLIENT_ID: ${{ secrets.BACKCHAT_X_OAUTH_CLIENT_ID }}
+          BACKCHAT_X_OAUTH_CLIENT_SECRET: ${{ secrets.BACKCHAT_X_OAUTH_CLIENT_SECRET }}
+          BACKCHAT_X_OAUTH_REDIRECT_URI: ${{ secrets.BACKCHAT_X_OAUTH_REDIRECT_URI }}
+        run: |
+          jq -n \
+            --arg setupKey "$BACKCHAT_SETUP_KEY" \
+            --arg googleClientId "$BACKCHAT_GOOGLE_OAUTH_CLIENT_ID" \
+            --arg googleClientSecret "$BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET" \
+            --arg googleRedirectUri "$BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI" \
+            --arg facebookClientId "$BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID" \
+            --arg facebookClientSecret "$BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET" \
+            --arg facebookRedirectUri "$BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI" \
+            --arg xClientId "$BACKCHAT_X_OAUTH_CLIENT_ID" \
+            --arg xClientSecret "$BACKCHAT_X_OAUTH_CLIENT_SECRET" \
+            --arg xRedirectUri "$BACKCHAT_X_OAUTH_REDIRECT_URI" \
+            '[
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_SETUP_KEY",Value:$setupKey},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_GOOGLE_OAUTH_CLIENT_ID",Value:$googleClientId},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_GOOGLE_OAUTH_CLIENT_SECRET",Value:$googleClientSecret},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_GOOGLE_OAUTH_REDIRECT_URI",Value:$googleRedirectUri},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_FACEBOOK_OAUTH_CLIENT_ID",Value:$facebookClientId},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_FACEBOOK_OAUTH_CLIENT_SECRET",Value:$facebookClientSecret},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_FACEBOOK_OAUTH_REDIRECT_URI",Value:$facebookRedirectUri},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_CLIENT_ID",Value:$xClientId},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_CLIENT_SECRET",Value:$xClientSecret},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_X_OAUTH_REDIRECT_URI",Value:$xRedirectUri}
+            ]' > option-settings.json
+
+      - name: Resolve Elastic Beanstalk storage bucket
+        id: storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          bucket_name="$(aws elasticbeanstalk create-storage-location --region "$AWS_REGION" --output text --query S3Bucket)"
+          echo "bucket_name=${bucket_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload application bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "${{ steps.bundle.outputs.bundle_name }}" \
+            "s3://${{ steps.storage.outputs.bucket_name }}/backchat/${{ steps.bundle.outputs.bundle_name }}"
+
+      - name: Create Elastic Beanstalk application version
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk create-application-version \
+            --application-name "$EB_APPLICATION_NAME" \
+            --version-label "${{ steps.bundle.outputs.version_label }}" \
+            --source-bundle S3Bucket="${{ steps.storage.outputs.bucket_name }}",S3Key="backchat/${{ steps.bundle.outputs.bundle_name }}" \
+            --process
+
+      - name: Deploy application version to Elastic Beanstalk
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk update-environment \
+            --environment-name "$EB_ENVIRONMENT_NAME" \
+            --version-label "${{ steps.bundle.outputs.version_label }}" \
+            --option-settings file://option-settings.json
+
+      - name: Wait for environment update
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "$EB_ENVIRONMENT_NAME"
+
+      - name: Verify environment health
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENVIRONMENT_NAME" \
+            --query 'Environments[0].[Status,Health,HealthStatus]' \
+            --output text
+          curl --fail --silent --show-error "$BACKEND_BASE_URL/health.php" | tee health-response.json
+          jq -e '.ok == true and .status == "healthy"' health-response.json > /dev/null
+
+      - name: Run schema setup
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_setup == 'true' }}
+        shell: bash
+        env:
+          BACKCHAT_SETUP_KEY: ${{ secrets.BACKCHAT_SETUP_KEY }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "{\"setupKey\":\"$BACKCHAT_SETUP_KEY\"}" \
+            "$BACKEND_BASE_URL/setup.php" | tee setup-response.json
+          jq -e '.ok == true and .status == "schema_ready"' setup-response.json > /dev/null
