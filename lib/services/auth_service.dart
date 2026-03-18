@@ -8,6 +8,20 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/app_user.dart';
 import 'backchat_api_service.dart';
 
+enum BrowserLaunchPlatform {
+  web,
+  windows,
+  macos,
+  linux,
+  other,
+}
+
+typedef BrowserUrlLauncher = Future<bool> Function(Uri uri, LaunchMode mode);
+typedef BrowserProcessLauncher = Future<bool> Function(
+  String executable,
+  List<String> arguments,
+);
+
 enum UsernameSignInStatus {
   signedIn,
   created,
@@ -59,8 +73,16 @@ class _UsernameAccount {
 }
 
 class AuthService {
-  AuthService({BackchatApiClient? apiService})
-      : _apiService = apiService ?? BackchatApiService();
+  AuthService({
+    BackchatApiClient? apiService,
+    BrowserUrlLauncher? urlLauncher,
+    BrowserProcessLauncher? processLauncher,
+    BrowserLaunchPlatform? browserPlatform,
+  })  : _apiService = apiService ?? BackchatApiService(),
+        _urlLauncher = urlLauncher ?? _defaultUrlLauncher,
+        _processLauncher = processLauncher ?? _defaultProcessLauncher,
+        _browserPlatform =
+            browserPlatform ?? _detectBrowserLaunchPlatform();
 
   static const String _usernameAccountsStorageKey = 'username_accounts_v1';
   static final RegExp _usernamePattern = RegExp(r'^[a-zA-Z0-9_]{3,24}$');
@@ -69,6 +91,9 @@ class AuthService {
   static const int _oauthMaxPollAttempts = 90;
 
   final BackchatApiClient _apiService;
+  final BrowserUrlLauncher _urlLauncher;
+  final BrowserProcessLauncher _processLauncher;
+  final BrowserLaunchPlatform _browserPlatform;
 
   bool get isRemoteApiEnabled => _apiService.isConfigured;
 
@@ -393,24 +418,60 @@ class AuthService {
   }
 
   Future<bool> _launchBrowser(Uri uri) async {
-    final bool launched =
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (launched) return true;
-
-    // Windows fallback in case url_launcher cannot resolve default browser.
-    if (!kIsWeb && Platform.isWindows) {
-      try {
-        await Process.start(
-          'cmd',
-          <String>['/c', 'start', '', uri.toString()],
-          runInShell: true,
-        );
-        return true;
-      } catch (_) {
-        return false;
-      }
+    switch (_browserPlatform) {
+      case BrowserLaunchPlatform.windows:
+        if (await _processLauncher('explorer.exe', <String>[uri.toString()])) {
+          return true;
+        }
+        break;
+      case BrowserLaunchPlatform.macos:
+        if (await _processLauncher('open', <String>[uri.toString()])) {
+          return true;
+        }
+        break;
+      case BrowserLaunchPlatform.linux:
+        if (await _processLauncher('xdg-open', <String>[uri.toString()])) {
+          return true;
+        }
+        break;
+      case BrowserLaunchPlatform.web:
+      case BrowserLaunchPlatform.other:
+        break;
     }
-    return false;
+
+    return _urlLauncher(uri, LaunchMode.externalApplication);
+  }
+
+  static BrowserLaunchPlatform _detectBrowserLaunchPlatform() {
+    if (kIsWeb) {
+      return BrowserLaunchPlatform.web;
+    }
+    if (Platform.isWindows) {
+      return BrowserLaunchPlatform.windows;
+    }
+    if (Platform.isMacOS) {
+      return BrowserLaunchPlatform.macos;
+    }
+    if (Platform.isLinux) {
+      return BrowserLaunchPlatform.linux;
+    }
+    return BrowserLaunchPlatform.other;
+  }
+
+  static Future<bool> _defaultUrlLauncher(Uri uri, LaunchMode mode) {
+    return launchUrl(uri, mode: mode);
+  }
+
+  static Future<bool> _defaultProcessLauncher(
+    String executable,
+    List<String> arguments,
+  ) async {
+    try {
+      await Process.start(executable, arguments);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
 }
