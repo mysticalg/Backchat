@@ -232,10 +232,230 @@ def render_page(release: dict) -> str:
     )
 
 
+def render_legal_page(
+    *,
+    title: str,
+    description: str,
+    canonical_url: str,
+    article_title: str,
+    effective_date: str,
+    body_html: str,
+) -> str:
+    template = Template((SITE_DIR / "legal.template.html").read_text(encoding="utf-8"))
+    return template.substitute(
+        page_title=title,
+        page_description=description,
+        canonical_url=canonical_url,
+        article_title=article_title,
+        effective_date=effective_date,
+        body_html=body_html,
+    )
+
+
 def copy_static_file(name: str) -> None:
     source = SITE_DIR / name
     target = OUTPUT_DIR / name
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def privacy_body() -> str:
+    return """
+    <section class="legal-section">
+      <h2>Overview</h2>
+      <p>
+        This Privacy Policy explains what information Backchat collects, where it is stored, and how it is used.
+        It is written for the app and download site in their current state as of the effective date below.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Information you provide</h2>
+      <p>Depending on which features you use, Backchat may store:</p>
+      <ul>
+        <li>Your username and normalized username.</li>
+        <li>Your recovery email address for username-based account recovery.</li>
+        <li>Your avatar URL and profile quote if you choose to set them.</li>
+        <li>Contact relationships you create inside the app.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Messages, call data, and local history</h2>
+      <ul>
+        <li>
+          Message history and unread counts are cached locally on each device or computer using the app.
+        </li>
+        <li>
+          The current backend stores message ciphertext and basic delivery metadata such as sender, recipient,
+          timestamps, and client message IDs.
+        </li>
+        <li>
+          Voice and video calling uses WebRTC-style signaling. The backend stores call session records and signaling
+          events needed to set up calls.
+        </li>
+        <li>
+          Call media is intended to use direct peer-to-peer paths where possible, but call setup still requires
+          signaling and network metadata.
+        </li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Session, security, and technical data</h2>
+      <ul>
+        <li>Session tokens are issued for signed-in users and stored server-side as token hashes.</li>
+        <li>Presence information is derived from session activity timestamps.</li>
+        <li>
+          If social sign-in is enabled in the future, Backchat may store provider identity data, profile data, and
+          OAuth tokens needed for that feature.
+        </li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Website and download hosting</h2>
+      <p>
+        The public download site is hosted on GitHub Pages and release files are hosted on GitHub Releases.
+        GitHub may collect standard web server and download request information such as IP address, user agent,
+        request timestamps, and referrer data under GitHub&apos;s own terms and privacy practices.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>How information is used</h2>
+      <ul>
+        <li>To create and recover username-based accounts.</li>
+        <li>To display your profile, presence, and contact list.</li>
+        <li>To route encrypted messages and call signaling between users.</li>
+        <li>To keep local conversation history and unread counters on your device.</li>
+        <li>To provide download pages and release assets.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Sharing</h2>
+      <p>
+        Backchat does not sell your personal information. Data may be processed through infrastructure providers used
+        to operate the project, including GitHub for the public site and releases and AWS for the hosted API.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Retention</h2>
+      <p>
+        Local chat history stays on the device where it was stored unless you remove it locally. Server-side records
+        may remain until deleted, rotated, or removed as part of maintenance or account cleanup.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Your choices</h2>
+      <ul>
+        <li>You can choose whether to set an avatar URL or profile quote.</li>
+        <li>You can decide whether to install and keep local conversation history on a given device.</li>
+        <li>You can stop using the app at any time.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>No special-category or emergency use promise</h2>
+      <p>
+        Backchat is not offered as a medical, legal, financial, child-directed, or emergency communications service.
+        Do not rely on it for emergencies or safety-critical communication.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Contact</h2>
+      <p>
+        For project or privacy questions, use the GitHub repository issue tracker unless and until a dedicated support
+        address is published.
+      </p>
+    </section>
+    """
+
+
+def terms_body() -> str:
+    return """
+    <section class="legal-section">
+      <h2>Acceptance</h2>
+      <p>
+        By downloading, installing, accessing, or using Backchat or its download site, you agree to these Terms and
+        Conditions.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>What Backchat is</h2>
+      <p>
+        Backchat is a software project for messaging, presence, and voice/video calling. It is currently distributed
+        as software releases through GitHub and uses hosted infrastructure for account, message, and call-signaling
+        features.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>License and permitted use</h2>
+      <p>
+        You may use the released app and site for lawful personal or internal testing use unless a separate license or
+        repository license file states otherwise. You must not use Backchat to violate laws, infringe rights, harass
+        others, distribute malware, or interfere with the service.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Your content and responsibilities</h2>
+      <ul>
+        <li>You are responsible for the usernames, profile text, avatar URLs, messages, and call activity you initiate.</li>
+        <li>You must only use content and profile images you have the right to use.</li>
+        <li>You must not attempt to access accounts, sessions, or data that are not yours.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Availability and changes</h2>
+      <p>
+        Backchat is provided on an evolving basis. Features may change, break, be removed, or become unavailable at
+        any time without notice, including hosted API features, downloads, or calling functionality.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>No warranty</h2>
+      <p>
+        Backchat is provided &quot;as is&quot; and &quot;as available&quot; without warranties of any kind, whether express or implied,
+        including merchantability, fitness for a particular purpose, non-infringement, or uninterrupted availability.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Limitation of liability</h2>
+      <p>
+        To the maximum extent permitted by law, the project owner and contributors will not be liable for indirect,
+        incidental, special, consequential, exemplary, or punitive damages, or for loss of data, profits, goodwill,
+        or business interruption arising from use of or inability to use Backchat.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Security and backups</h2>
+      <p>
+        You are responsible for maintaining your own device security, backup practices, and safe handling of your
+        account details. Local conversation history may be lost if your device is reset, damaged, or cleaned.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>No emergency or regulated-service use</h2>
+      <p>
+        Backchat is not an emergency service and is not guaranteed for regulated, life-critical, or compliance-critical
+        communications.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Third-party services</h2>
+      <p>
+        Backchat may rely on third-party services including GitHub and AWS. Their separate terms, policies, and
+        service limitations may also apply.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Changes to these terms</h2>
+      <p>
+        These Terms may be updated over time. Continued use after updated terms are published means you accept the
+        revised version.
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>Contact</h2>
+      <p>
+        For project questions, bug reports, or policy concerns, use the GitHub issue tracker unless a dedicated
+        support channel is published later.
+      </p>
+    </section>
+    """
 
 
 def main() -> None:
@@ -244,6 +464,34 @@ def main() -> None:
 
     (OUTPUT_DIR / "index.html").write_text(render_page(release), encoding="utf-8")
     (OUTPUT_DIR / "404.html").write_text(render_page(release), encoding="utf-8")
+    (OUTPUT_DIR / "privacy.html").write_text(
+        render_legal_page(
+            title="Backchat Privacy Policy",
+            description=(
+                "Read the Backchat Privacy Policy, including what data is stored on-device, "
+                "what the hosted backend retains, and how downloads are served."
+            ),
+            canonical_url=f"{PAGES_URL}privacy.html",
+            article_title="Privacy Policy",
+            effective_date="March 18, 2026",
+            body_html=privacy_body(),
+        ),
+        encoding="utf-8",
+    )
+    (OUTPUT_DIR / "terms.html").write_text(
+        render_legal_page(
+            title="Backchat Terms and Conditions",
+            description=(
+                "Read the Backchat Terms and Conditions for downloads, hosted features, "
+                "acceptable use, and the current as-is software disclaimer."
+            ),
+            canonical_url=f"{PAGES_URL}terms.html",
+            article_title="Terms and Conditions",
+            effective_date="March 18, 2026",
+            body_html=terms_body(),
+        ),
+        encoding="utf-8",
+    )
     (OUTPUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
     copy_static_file("styles.css")
     copy_static_file("robots.txt")
@@ -252,6 +500,14 @@ def main() -> None:
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>{html.escape(PAGES_URL)}</loc>
+    <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
+  </url>
+  <url>
+    <loc>{html.escape(f"{PAGES_URL}privacy.html")}</loc>
+    <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
+  </url>
+  <url>
+    <loc>{html.escape(f"{PAGES_URL}terms.html")}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
 </urlset>
