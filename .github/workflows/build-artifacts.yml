@@ -241,16 +241,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
           RELEASE_NAME: ${{ needs.prepare-release.outputs.release_name }}
         run: |
           set -euo pipefail
           notes="Automated build assets from workflow run #${GITHUB_RUN_NUMBER}."
 
-          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME" --notes "$notes"
+          if gh release view "$RELEASE_TAG" -R "$GH_REPO" > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" -R "$GH_REPO" --title "$RELEASE_NAME" --notes "$notes"
           else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --notes "$notes" --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" -R "$GH_REPO" --title "$RELEASE_NAME" --notes "$notes" --target "$GITHUB_SHA"
           fi
 
-          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release upload "$RELEASE_TAG" -R "$GH_REPO" release-assets/* --clobber
