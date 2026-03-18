@@ -25,7 +25,36 @@ on:
         default: true
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.meta.outputs.app_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_version="$(sed -n "s/^version:[[:space:]]*//p" pubspec.yaml | head -n 1 | tr -d "'\r")"
+          if [ -z "$app_version" ]; then
+            echo "Could not determine app version from pubspec.yaml" >&2
+            exit 1
+          fi
+
+          release_tag="v${app_version/+/-build.}"
+          release_name="Backchat ${app_version}"
+
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+
   build-windows:
+    needs: prepare-release
     if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     steps:
@@ -43,13 +72,20 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
+      - name: Package Windows release
+        shell: pwsh
+        run: |
+          $assetName = "backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}.zip"
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath $assetName -CompressionLevel Optimal
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-release
-          path: build/windows/x64/runner/Release/**
+          name: release-asset-windows
+          path: backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}.zip
 
   build-macos:
+    needs: prepare-release
     if: ${{ inputs.build_macos }}
     runs-on: macos-latest
     steps:
@@ -67,13 +103,21 @@ jobs:
       - name: Build macOS release
         run: flutter build macos --release
 
+      - name: Package macOS release
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_name="backchat-macos-${{ needs.prepare-release.outputs.app_version }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/macos/Build/Products/Release/backchat.app" "$asset_name"
+
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-release
-          path: build/macos/Build/Products/Release/**
+          name: release-asset-macos
+          path: backchat-macos-${{ needs.prepare-release.outputs.app_version }}.zip
 
   build-linux:
+    needs: prepare-release
     if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
     steps:
@@ -103,13 +147,21 @@ jobs:
       - name: Build Linux release
         run: flutter build linux --release
 
+      - name: Package Linux release
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_name="backchat-linux-x64-${{ needs.prepare-release.outputs.app_version }}.tar.gz"
+          tar -C build/linux/x64/release -czf "$asset_name" bundle
+
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-release
-          path: build/linux/x64/release/bundle/**
+          name: release-asset-linux
+          path: backchat-linux-x64-${{ needs.prepare-release.outputs.app_version }}.tar.gz
 
   build-android:
+    needs: prepare-release
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
     steps:
@@ -136,10 +188,69 @@ jobs:
       - name: Build Android app bundle
         run: flutter build appbundle --release
 
+      - name: Package Android artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/app/outputs/flutter-apk/app-release.apk "backchat-android-${{ needs.prepare-release.outputs.app_version }}.apk"
+          cp build/app/outputs/bundle/release/app-release.aab "backchat-android-${{ needs.prepare-release.outputs.app_version }}.aab"
+
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-release
+          name: release-asset-android
           path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/bundle/release/*.aab
+            backchat-android-${{ needs.prepare-release.outputs.app_version }}.apk
+            backchat-android-${{ needs.prepare-release.outputs.app_version }}.aab
+
+  publish-release:
+    needs:
+      - prepare-release
+      - build-windows
+      - build-macos
+      - build-linux
+      - build-android
+    if: >-
+      ${{
+        always() &&
+        (inputs.build_windows || inputs.build_macos || inputs.build_linux || inputs.build_android) &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+        (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped') &&
+        (needs.build-android.result == 'success' || needs.build-android.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-asset-*
+          merge-multiple: true
+
+      - name: Show release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah release-assets
+          compgen -G "release-assets/*" > /dev/null
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.prepare-release.outputs.release_name }}
+        run: |
+          set -euo pipefail
+          notes="Automated build assets from workflow run #${GITHUB_RUN_NUMBER}."
+
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME" --notes "$notes"
+          else
+            gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --notes "$notes" --target "$GITHUB_SHA"
+          fi
+
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
