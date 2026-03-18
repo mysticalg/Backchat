@@ -30,12 +30,12 @@ if ($offerType !== 'offer' || $offerSdp === '') {
     bc_fail('invalid_offer', 'Offer must include type=offer and a non-empty SDP.', 400);
 }
 
-$recipient = bc_find_contact_user_or_fail((int)$authUser['id'], $toUsername);
-if ((int)$recipient['id'] === (int)$authUser['id']) {
-    bc_fail('invalid_recipient', 'Cannot start a call with yourself.', 409);
-}
-
 try {
+    $recipient = bc_find_contact_user_or_fail((int)$authUser['id'], $toUsername);
+    if ((int)$recipient['id'] === (int)$authUser['id']) {
+        bc_fail('invalid_recipient', 'Cannot start a call with yourself.', 409);
+    }
+
     $activeCheck = bc_pdo()->prepare(
         'SELECT id
          FROM call_sessions
