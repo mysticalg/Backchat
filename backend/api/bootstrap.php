@@ -933,12 +933,13 @@ function bc_call_session_for_user_or_fail(int $callId, int $authUserId): array
         'SELECT *
          FROM call_sessions
          WHERE id = :id
-           AND (caller_user_id = :user_id OR callee_user_id = :user_id)
+           AND (caller_user_id = :caller_user_id OR callee_user_id = :callee_user_id)
          LIMIT 1'
     );
     $stmt->execute([
         ':id' => $callId,
-        ':user_id' => $authUserId,
+        ':caller_user_id' => $authUserId,
+        ':callee_user_id' => $authUserId,
     ]);
     $row = $stmt->fetch();
     if (!$row) {
