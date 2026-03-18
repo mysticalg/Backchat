@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>$page_title</title>
+    <meta name="description" content="$page_description" />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="$canonical_url" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Backchat" />
+    <meta property="og:description" content="$page_description" />
+    <meta property="og:url" content="$canonical_url" />
+    <meta property="og:site_name" content="Backchat" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Backchat" />
+    <meta name="twitter:description" content="$page_description" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="application/ld+json">
+$structured_data
+    </script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <nav class="topbar">
+          <a class="brand" href="$canonical_url">Backchat</a>
+          <div class="topbar__links">
+            <a href="#downloads">Downloads</a>
+            <a href="#features">Features</a>
+            <a href="$repo_url">GitHub</a>
+          </div>
+        </nav>
+
+        <div class="hero__content">
+          <div class="hero__copy">
+            <p class="eyebrow">Secure cross-platform messaging</p>
+            <h1>Backchat keeps private conversations fast, local, and easy to install.</h1>
+            <p class="lede">
+              Backchat is a Flutter-based messenger with local conversation history, unread badges,
+              online presence, and one-to-one voice and video calls that can prefer direct or VPN-friendly routes.
+            </p>
+            <div class="hero__actions">
+              <a class="button" href="#downloads">See downloads</a>
+              <a class="button button--ghost" href="$release_url">Latest release</a>
+            </div>
+            <dl class="release-pill">
+              <div>
+                <dt>Latest build</dt>
+                <dd>$release_name</dd>
+              </div>
+              <div>
+                <dt>Tag</dt>
+                <dd>$release_tag</dd>
+              </div>
+              <div>
+                <dt>Published</dt>
+                <dd>$release_date</dd>
+              </div>
+            </dl>
+          </div>
+          <div class="hero__panel">
+            <div class="signal-card">
+              <span class="signal-card__label">Why people pick Backchat</span>
+              <ul>
+                <li>Local chat history on each computer</li>
+                <li>Unread counts in the app and taskbar</li>
+                <li>Online/offline presence and profile quotes</li>
+                <li>Voice and video calls with direct/VPN-aware routing</li>
+              </ul>
+            </div>
+            <div class="signal-card signal-card--accent">
+              <span class="signal-card__label">Delivery model</span>
+              <p>
+                Messages sync through the hosted API, while voice and video prefer peer-to-peer media paths when networks allow it.
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <section class="section" id="downloads">
+          <div class="section__heading">
+            <p class="eyebrow">Latest downloads</p>
+            <h2>One clear place to grab the current build for every platform.</h2>
+            <p>
+              These links are generated from the latest GitHub Release so the page stays current as new installers and bundles are published.
+            </p>
+          </div>
+          <div class="downloads-grid">
+$download_cards
+          </div>
+        </section>
+
+        <section class="section section--split" id="features">
+          <div class="section__heading">
+            <p class="eyebrow">What’s inside</p>
+            <h2>Built for private conversation, not just polished screenshots.</h2>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card">
+              <h3>Focused desktop experience</h3>
+              <p>
+                Contact-side unread counters, taskbar badges, quick contact switching, and conversation focus that feels like a real desktop messenger.
+              </p>
+            </article>
+            <article class="feature-card">
+              <h3>Local-first history</h3>
+              <p>
+                Conversation logs are cached per machine so your message history and unread state stay available locally without turning the server into your archive.
+              </p>
+            </article>
+            <article class="feature-card">
+              <h3>Presence and profiles</h3>
+              <p>
+                Contacts can see avatar, quote, and online state at a glance so the contact list works like a useful dashboard, not just a list of names.
+              </p>
+            </article>
+            <article class="feature-card">
+              <h3>Direct-friendly calling</h3>
+              <p>
+                Voice and video calls use WebRTC signaling with advanced routing controls for auto, direct/VPN-preferred, direct-only, or relay-only behavior.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section section--muted" id="security">
+          <div class="section__heading">
+            <p class="eyebrow">Security snapshot</p>
+            <h2>Practical encryption with room to grow.</h2>
+            <p>
+              Backchat already ships encrypted-message primitives, presence, and direct-call signaling. The project is structured so you can keep strengthening the transport and device story over time.
+            </p>
+          </div>
+          <div class="security-grid">
+            <article class="security-card">
+              <h3>Encrypted messaging primitives</h3>
+              <p>X25519 key exchange and AES-GCM are already in the app scaffold for message protection.</p>
+            </article>
+            <article class="security-card">
+              <h3>Direct media when possible</h3>
+              <p>Voice and video attempt peer-to-peer routing first, with relay fallback as an option when network conditions need it.</p>
+            </article>
+            <article class="security-card">
+              <h3>Transparent release checksums</h3>
+              <p>The latest release digests are published here so testers can verify exactly what they downloaded.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="checksums">
+          <div class="section__heading">
+            <p class="eyebrow">Verification</p>
+            <h2>Latest asset SHA-256 digests</h2>
+            <p>Generated from the latest GitHub Release metadata on $generated_at.</p>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>SHA-256</th>
+                </tr>
+              </thead>
+              <tbody>
+$checksum_rows
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <p>Backchat on GitHub Pages</p>
+        <div class="footer__links">
+          <a href="$repo_url">Source code</a>
+          <a href="$release_url">Latest release</a>
+          <a href="https://github.com/$owner_repo/issues">Issue tracker</a>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

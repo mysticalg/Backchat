@@ -55,3 +55,4 @@ app.*.map.json
 # Local release builds and test artifacts
 /releases/
 /call-test.json
+/_site/
