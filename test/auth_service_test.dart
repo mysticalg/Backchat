@@ -240,6 +240,121 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   }
 }
 
+class _SuccessfulUsernameApiClient implements BackchatApiClient {
+  @override
+  bool get isConfigured => true;
+
+  @override
+  Future<void> clearToken() async {}
+
+  @override
+  Future<List<AppUser>> fetchContacts() async => <AppUser>[];
+
+  @override
+  Future<AppUser> fetchMyProfile() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Map<String, dynamic>> inviteByUsername(String username) async =>
+      <String, dynamic>{};
+
+  @override
+  Future<AppUser> updateProfile({
+    required String avatarUrl,
+    required String quote,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<PollMessagesResult> pollMessages({
+    int sinceId = 0,
+    int limit = 100,
+    required String currentUserId,
+  }) async {
+    return const PollMessagesResult(
+      nextSinceId: 0,
+      messages: <ChatMessage>[],
+    );
+  }
+
+  @override
+  Future<SocialOAuthProbeResult> probeSocialOAuth() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<String?> recoverUsernameForEmail(String recoveryEmail) async => null;
+
+  @override
+  Future<Map<String, dynamic>> signInOrCreateWithUsername({
+    required String username,
+    required String recoveryEmail,
+  }) async {
+    return <String, dynamic>{
+      'status': 'signed_in',
+      'user': <String, dynamic>{
+        'id': 'username:${username.toLowerCase()}',
+        'username': username,
+        'displayName': username,
+        'avatarUrl': '',
+        'provider': 'username',
+        'quote': '',
+      },
+    };
+  }
+
+  @override
+  Future<void> sendMessage({
+    required String toUsername,
+    required String cipherText,
+    String? clientMessageId,
+  }) async {}
+
+  @override
+  Future<CallServerConfig> fetchCallConfig() async => const CallServerConfig();
+
+  @override
+  Future<PollCallSignalsResult> pollCallSignals({
+    int sinceId = 0,
+    int limit = 100,
+  }) async {
+    return const PollCallSignalsResult(
+      nextSinceId: 0,
+      signals: <CallSignalEvent>[],
+    );
+  }
+
+  @override
+  Future<void> sendCallSignal({
+    required int callId,
+    required CallSignalType type,
+    Map<String, dynamic>? payload,
+  }) async {}
+
+  @override
+  Future<CallSummary> startCall({
+    required String toUsername,
+    required CallKind kind,
+    required String offerType,
+    required String offerSdp,
+    required CallSettings settings,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SocialOAuthStartResult> startSocialOAuth(String provider) async {
+    throw UnimplementedError();
+  }
+}
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -279,6 +394,46 @@ void main() {
         await authService.recoverUsernameForEmail('recover_user@example.com');
 
     expect(recovered, 'recover_user');
+  });
+
+  test('remembers API-backed username sign-ins for autofill', () async {
+    final AuthService authService =
+        AuthService(apiService: _SuccessfulUsernameApiClient());
+
+    final UsernameSignInResult result =
+        await authService.signInOrCreateWithUsername(
+      username: 'api_user',
+      recoveryEmail: 'api_user@example.com',
+    );
+    final List<RememberedUsernameAccount> remembered =
+        await authService.loadRememberedUsernameAccounts();
+
+    expect(result.status, UsernameSignInStatus.signedIn);
+    expect(remembered, hasLength(1));
+    expect(remembered.first.username, 'api_user');
+    expect(remembered.first.recoveryEmail, 'api_user@example.com');
+  });
+
+  test(
+      'keeps remembered recovery email when API sign-in happens without retyping it',
+      () async {
+    final AuthService authService =
+        AuthService(apiService: _SuccessfulUsernameApiClient());
+
+    await authService.signInOrCreateWithUsername(
+      username: 'api_user',
+      recoveryEmail: 'api_user@example.com',
+    );
+    await authService.signInOrCreateWithUsername(
+      username: 'api_user',
+      recoveryEmail: '',
+    );
+    final List<RememberedUsernameAccount> remembered =
+        await authService.loadRememberedUsernameAccounts();
+
+    expect(remembered, hasLength(1));
+    expect(remembered.first.username, 'api_user');
+    expect(remembered.first.recoveryEmail, 'api_user@example.com');
   });
 
   test('social auth uses desktop process launcher on Windows first', () async {

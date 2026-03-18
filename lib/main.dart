@@ -81,12 +81,13 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
       TextEditingController();
   final TextEditingController _messageController = TextEditingController();
   final List<_ConversationEntry> _conversation = <_ConversationEntry>[];
+  List<RememberedUsernameAccount> _rememberedAccounts =
+      <RememberedUsernameAccount>[];
+  String? _rememberedAccountSelection;
   bool _isAuthBusy = false;
   bool _isInviteBusy = false;
-  bool _isCheckingSocialAuth = false;
   bool _isSyncingMessages = false;
   bool _isLoadingContacts = false;
-  String? _socialAuthWarning;
   Timer? _messagePollTimer;
   Timer? _contactRefreshTimer;
 
@@ -98,7 +99,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _callService.addListener(_handleCallServiceChanged);
     _bootstrapCrypto();
     _configureTrayIfDesktop();
-    _runSocialAuthStartupCheck();
+    _loadRememberedAccounts(autofillSingleAccount: true);
   }
 
   @override
@@ -222,6 +223,46 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     }
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _loadRememberedAccounts({
+    bool autofillSingleAccount = false,
+  }) async {
+    final List<RememberedUsernameAccount> accounts =
+        await _authService.loadRememberedUsernameAccounts();
+    if (!mounted) {
+      return;
+    }
+
+    final String normalizedUsername =
+        _usernameController.text.trim().toLowerCase();
+    final String? nextSelection = accounts.any(
+      (RememberedUsernameAccount account) =>
+          account.normalizedUsername == normalizedUsername,
+    )
+        ? normalizedUsername
+        : null;
+
+    setState(() {
+      _rememberedAccounts = accounts;
+      _rememberedAccountSelection = nextSelection;
+    });
+
+    if (autofillSingleAccount &&
+        accounts.length == 1 &&
+        _usernameController.text.trim().isEmpty &&
+        _usernameRecoveryEmailController.text.trim().isEmpty) {
+      _applyRememberedAccount(accounts.first);
+    }
+  }
+
+  void _applyRememberedAccount(RememberedUsernameAccount account) {
+    _usernameController.text = account.username;
+    _usernameRecoveryEmailController.text = account.recoveryEmail;
+    _recoveryEmailController.text = account.recoveryEmail;
+    setState(() {
+      _rememberedAccountSelection = account.normalizedUsername;
+    });
   }
 
   Future<void> _activateUserSession(AppUser user) async {
@@ -687,74 +728,6 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     }
   }
 
-  Future<void> _runSocialAuthStartupCheck() async {
-    if (!_authService.isRemoteApiEnabled) {
-      return;
-    }
-    setState(() => _isCheckingSocialAuth = true);
-    final String? warning = await _authService.socialOAuthStartupWarning();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _socialAuthWarning = warning;
-      _isCheckingSocialAuth = false;
-    });
-  }
-
-  Future<void> _continueWithSocial({
-    required Future<AppUser?> Function() signIn,
-    required String providerLabel,
-  }) async {
-    if (_isAuthBusy) {
-      return;
-    }
-
-    setState(() => _isAuthBusy = true);
-    try {
-      _showAuthMessage(
-        'Opening $providerLabel login in your browser. Complete login there, then return here.',
-      );
-      final AppUser? user = await signIn();
-      if (user == null) {
-        _showAuthMessage('$providerLabel login was cancelled.');
-        return;
-      }
-      await _activateUserSession(user);
-    } on BackchatApiException catch (e) {
-      _showAuthMessage(e.message);
-    } catch (_) {
-      _showAuthMessage(
-        '$providerLabel login failed or is not configured yet.',
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isAuthBusy = false);
-      }
-    }
-  }
-
-  Future<void> _continueWithGoogle() {
-    return _continueWithSocial(
-      signIn: _authService.signInWithGoogle,
-      providerLabel: 'Google',
-    );
-  }
-
-  Future<void> _continueWithFacebook() {
-    return _continueWithSocial(
-      signIn: _authService.signInWithFacebook,
-      providerLabel: 'Facebook',
-    );
-  }
-
-  Future<void> _continueWithX() {
-    return _continueWithSocial(
-      signIn: _authService.signInWithX,
-      providerLabel: 'X',
-    );
-  }
-
   Future<void> _recoverUsername() async {
     final String? username = await _authService
         .recoverUsernameForEmail(_recoveryEmailController.text);
@@ -764,6 +737,16 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     }
 
     _usernameController.text = username;
+    _usernameRecoveryEmailController.text = _recoveryEmailController.text.trim();
+    final String normalizedUsername = username.trim().toLowerCase();
+    setState(() {
+      _rememberedAccountSelection = _rememberedAccounts.any(
+        (RememberedUsernameAccount account) =>
+            account.normalizedUsername == normalizedUsername,
+      )
+          ? normalizedUsername
+          : null;
+    });
     _showAuthMessage('Recovered username: $username');
   }
 
@@ -1045,66 +1028,54 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Choose username, Google, Facebook, or X to start chatting.',
+                  'Sign in with a username and recovery email. Saved sign-ins stay on this device so you can pick them again later.',
                   textAlign: TextAlign.center,
                 ),
-                if (!_authService.isRemoteApiEnabled) ...<Widget>[
+                const SizedBox(height: 16),
+                if (_rememberedAccounts.isNotEmpty) ...<Widget>[
+                  DropdownButtonFormField<String>(
+                    initialValue: _rememberedAccountSelection,
+                    decoration: const InputDecoration(
+                      labelText: 'Autofill a remembered sign-in',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _rememberedAccounts
+                        .map(
+                          (RememberedUsernameAccount account) =>
+                              DropdownMenuItem<String>(
+                            value: account.normalizedUsername,
+                            child: Text(
+                              '${account.username}  |  ${account.recoveryEmail}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (String? normalizedUsername) {
+                      if (normalizedUsername == null) {
+                        return;
+                      }
+                      for (final RememberedUsernameAccount account
+                          in _rememberedAccounts) {
+                        if (account.normalizedUsername == normalizedUsername) {
+                          _applyRememberedAccount(account);
+                          break;
+                        }
+                      }
+                    },
+                  ),
                   const SizedBox(height: 8),
                   Text(
-                    'Social login needs BACKCHAT_API_BASE_URL configured in this build.',
+                    _rememberedAccounts.length == 1
+                        ? '1 saved sign-in on this device.'
+                        : '${_rememberedAccounts.length} saved sign-ins on this device.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                  const SizedBox(height: 16),
                 ],
-                if (_authService.isRemoteApiEnabled && _isCheckingSocialAuth)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
-                    child: Center(
-                      child: SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  ),
-                if (_socialAuthWarning != null) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      _socialAuthWarning!,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: _isAuthBusy ? null : _continueWithGoogle,
-                  icon: const Icon(Icons.g_mobiledata),
-                  label: const Text('Continue with Google'),
-                ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: _isAuthBusy ? null : _continueWithFacebook,
-                  icon: const Icon(Icons.facebook),
-                  label: const Text('Continue with Facebook'),
-                ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: _isAuthBusy ? null : _continueWithX,
-                  icon: const Icon(Icons.alternate_email),
-                  label: const Text('Continue with X'),
-                ),
-                const SizedBox(height: 16),
-                const Divider(),
-                const SizedBox(height: 8),
                 Text(
-                  'Or use username',
+                  'Username sign-in',
                   style: Theme.of(context).textTheme.titleMedium,
                   textAlign: TextAlign.center,
                 ),

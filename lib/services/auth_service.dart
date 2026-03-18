@@ -44,22 +44,39 @@ class UsernameSignInResult {
   final String? linkedUsername;
 }
 
-class _UsernameAccount {
-  const _UsernameAccount({
+class RememberedUsernameAccount {
+  const RememberedUsernameAccount({
     required this.username,
     required this.normalizedUsername,
     required this.recoveryEmail,
+    this.lastUsedAt,
   });
 
   final String username;
   final String normalizedUsername;
   final String recoveryEmail;
+  final DateTime? lastUsedAt;
+}
+
+class _UsernameAccount {
+  const _UsernameAccount({
+    required this.username,
+    required this.normalizedUsername,
+    required this.recoveryEmail,
+    required this.lastUsedAtEpochMs,
+  });
+
+  final String username;
+  final String normalizedUsername;
+  final String recoveryEmail;
+  final int lastUsedAtEpochMs;
 
   factory _UsernameAccount.fromJson(Map<String, dynamic> json) {
     return _UsernameAccount(
       username: json['username']?.toString() ?? '',
       normalizedUsername: json['normalizedUsername']?.toString() ?? '',
       recoveryEmail: json['recoveryEmail']?.toString() ?? '',
+      lastUsedAtEpochMs: _parseEpochMs(json['lastUsedAtEpochMs']),
     );
   }
 
@@ -68,7 +85,40 @@ class _UsernameAccount {
       'username': username,
       'normalizedUsername': normalizedUsername,
       'recoveryEmail': recoveryEmail,
+      'lastUsedAtEpochMs': lastUsedAtEpochMs,
     };
+  }
+
+  _UsernameAccount copyWith({
+    String? username,
+    String? normalizedUsername,
+    String? recoveryEmail,
+    int? lastUsedAtEpochMs,
+  }) {
+    return _UsernameAccount(
+      username: username ?? this.username,
+      normalizedUsername: normalizedUsername ?? this.normalizedUsername,
+      recoveryEmail: recoveryEmail ?? this.recoveryEmail,
+      lastUsedAtEpochMs: lastUsedAtEpochMs ?? this.lastUsedAtEpochMs,
+    );
+  }
+
+  RememberedUsernameAccount toRememberedAccount() {
+    return RememberedUsernameAccount(
+      username: username,
+      normalizedUsername: normalizedUsername,
+      recoveryEmail: recoveryEmail,
+      lastUsedAt: lastUsedAtEpochMs > 0
+          ? DateTime.fromMillisecondsSinceEpoch(lastUsedAtEpochMs, isUtc: true)
+          : null,
+    );
+  }
+
+  static int _parseEpochMs(Object? rawValue) {
+    if (rawValue is int) {
+      return rawValue;
+    }
+    return int.tryParse(rawValue?.toString() ?? '') ?? 0;
   }
 }
 
@@ -100,36 +150,57 @@ class AuthService {
     return _usernamePattern.hasMatch(username.trim());
   }
 
+  Future<List<RememberedUsernameAccount>> loadRememberedUsernameAccounts() async {
+    final List<_UsernameAccount> accounts = await _readUsernameAccounts();
+    return accounts
+        .map((_UsernameAccount account) => account.toRememberedAccount())
+        .toList(growable: false);
+  }
+
   Future<UsernameSignInResult> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
   }) async {
+    final String cleanedUsername = username.trim();
+    final String cleanedRecoveryEmail = recoveryEmail.trim();
     if (_apiService.isConfigured) {
       try {
         final Map<String, dynamic> response =
             await _apiService.signInOrCreateWithUsername(
-          username: username,
-          recoveryEmail: recoveryEmail,
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
         );
         final String status = response['status']?.toString() ?? '';
         final AppUser? user = response['user'] is Map<String, dynamic>
             ? _apiUserToAppUser(response['user'] as Map<String, dynamic>)
             : null;
         if (status == 'signed_in') {
+          await _rememberUsernameAccount(
+            username: user?.username.isNotEmpty == true
+                ? user!.username
+                : cleanedUsername,
+            recoveryEmail: cleanedRecoveryEmail,
+          );
           return UsernameSignInResult(
             status: UsernameSignInStatus.signedIn,
             user: user,
           );
         }
         if (status == 'created') {
+          await _rememberUsernameAccount(
+            username: user?.username.isNotEmpty == true
+                ? user!.username
+                : cleanedUsername,
+            recoveryEmail: cleanedRecoveryEmail,
+          );
           return UsernameSignInResult(
             status: UsernameSignInStatus.created,
             user: user,
           );
         }
         return _signInOrCreateWithUsernameLocal(
-          username: username,
-          recoveryEmail: recoveryEmail,
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
         );
       } on BackchatApiException catch (e) {
         if (e.status == 'invalid_username') {
@@ -154,20 +225,20 @@ class AuthService {
           );
         }
         return _signInOrCreateWithUsernameLocal(
-          username: username,
-          recoveryEmail: recoveryEmail,
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
         );
       } catch (_) {
         return _signInOrCreateWithUsernameLocal(
-          username: username,
-          recoveryEmail: recoveryEmail,
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
         );
       }
     }
 
     return _signInOrCreateWithUsernameLocal(
-      username: username,
-      recoveryEmail: recoveryEmail,
+      username: cleanedUsername,
+      recoveryEmail: cleanedRecoveryEmail,
     );
   }
 
@@ -191,6 +262,10 @@ class AuthService {
       }
     }
     if (existing != null) {
+      await _rememberUsernameAccount(
+        username: existing.username,
+        recoveryEmail: existing.recoveryEmail,
+      );
       return UsernameSignInResult(
         status: UsernameSignInStatus.signedIn,
         user: _toAppUser(existing),
@@ -226,9 +301,12 @@ class AuthService {
       username: cleanedUsername,
       normalizedUsername: normalizedUsername,
       recoveryEmail: cleanedEmail,
+      lastUsedAtEpochMs: DateTime.now().toUtc().millisecondsSinceEpoch,
     );
-    accounts.add(created);
-    await _writeUsernameAccounts(accounts);
+    await _rememberUsernameAccount(
+      username: created.username,
+      recoveryEmail: created.recoveryEmail,
+    );
 
     return UsernameSignInResult(
       status: UsernameSignInStatus.created,
@@ -328,7 +406,11 @@ class AuthService {
               account.normalizedUsername.isNotEmpty &&
               account.recoveryEmail.isNotEmpty,
         )
-        .toList();
+        .toList()
+      ..sort(
+        (_UsernameAccount a, _UsernameAccount b) =>
+            b.lastUsedAtEpochMs.compareTo(a.lastUsedAtEpochMs),
+      );
   }
 
   Future<void> _writeUsernameAccounts(List<_UsernameAccount> accounts) async {
@@ -337,6 +419,56 @@ class AuthService {
       accounts.map((_UsernameAccount account) => account.toJson()).toList(),
     );
     await prefs.setString(_usernameAccountsStorageKey, payload);
+  }
+
+  Future<void> _rememberUsernameAccount({
+    required String username,
+    required String recoveryEmail,
+  }) async {
+    final String cleanedUsername = username.trim();
+    final String normalizedUsername = cleanedUsername.toLowerCase();
+    if (!_usernamePattern.hasMatch(cleanedUsername)) {
+      return;
+    }
+
+    final List<_UsernameAccount> accounts = await _readUsernameAccounts();
+    final int existingIndex = accounts.indexWhere(
+      (_UsernameAccount account) =>
+          account.normalizedUsername == normalizedUsername,
+    );
+    final String cleanedEmail = recoveryEmail.trim();
+    final int nowMs = DateTime.now().toUtc().millisecondsSinceEpoch;
+
+    if (existingIndex >= 0) {
+      final _UsernameAccount existing = accounts.removeAt(existingIndex);
+      accounts.insert(
+        0,
+        existing.copyWith(
+          username: cleanedUsername,
+          normalizedUsername: normalizedUsername,
+          recoveryEmail:
+              cleanedEmail.isNotEmpty ? cleanedEmail : existing.recoveryEmail,
+          lastUsedAtEpochMs: nowMs,
+        ),
+      );
+      await _writeUsernameAccounts(accounts);
+      return;
+    }
+
+    if (!_emailPattern.hasMatch(cleanedEmail)) {
+      return;
+    }
+
+    accounts.insert(
+      0,
+      _UsernameAccount(
+        username: cleanedUsername,
+        normalizedUsername: normalizedUsername,
+        recoveryEmail: cleanedEmail,
+        lastUsedAtEpochMs: nowMs,
+      ),
+    );
+    await _writeUsernameAccounts(accounts);
   }
 
   AppUser _toAppUser(_UsernameAccount account) {
