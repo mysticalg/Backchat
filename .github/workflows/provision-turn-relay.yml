@@ -1,0 +1,116 @@
+name: Provision TURN Relay
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_provision:
+        description: Type PROVISION to create or reuse the TURN relay
+        required: true
+        default: ""
+
+jobs:
+  provision-turn-relay:
+    if: ${{ inputs.confirm_provision == 'PROVISION' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: eu-west-2
+      EB_ENVIRONMENT_NAME: Backchat-env
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          BACKCHAT_CALL_TURN_USERNAME: ${{ secrets.BACKCHAT_CALL_TURN_USERNAME }}
+          BACKCHAT_CALL_TURN_CREDENTIAL: ${{ secrets.BACKCHAT_CALL_TURN_CREDENTIAL }}
+          BACKCHAT_CALL_STUN_URLS: ${{ secrets.BACKCHAT_CALL_STUN_URLS }}
+        run: |
+          test -n "$AWS_ROLE_TO_ASSUME" || (echo "Missing secret AWS_ROLE_TO_ASSUME" && exit 1)
+          test -n "$BACKCHAT_CALL_TURN_USERNAME" || (echo "Missing secret BACKCHAT_CALL_TURN_USERNAME" && exit 1)
+          test -n "$BACKCHAT_CALL_TURN_CREDENTIAL" || (echo "Missing secret BACKCHAT_CALL_TURN_CREDENTIAL" && exit 1)
+          test -n "$BACKCHAT_CALL_STUN_URLS" || (echo "Missing secret BACKCHAT_CALL_STUN_URLS" && exit 1)
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+      - name: Provision relay infrastructure
+        id: provision
+        env:
+          TURN_USERNAME: ${{ secrets.BACKCHAT_CALL_TURN_USERNAME }}
+          TURN_PASSWORD: ${{ secrets.BACKCHAT_CALL_TURN_CREDENTIAL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/provision_turn_relay.sh | tee turn-relay-details.json
+          {
+            echo 'result_json<<JSON'
+            cat turn-relay-details.json
+            echo 'JSON'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update Elastic Beanstalk TURN environment variables
+        env:
+          BACKCHAT_CALL_TURN_USERNAME: ${{ secrets.BACKCHAT_CALL_TURN_USERNAME }}
+          BACKCHAT_CALL_TURN_CREDENTIAL: ${{ secrets.BACKCHAT_CALL_TURN_CREDENTIAL }}
+          BACKCHAT_CALL_STUN_URLS: ${{ secrets.BACKCHAT_CALL_STUN_URLS }}
+          TURN_RESULT_JSON: ${{ steps.provision.outputs.result_json }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          turn_urls="$(jq -r '.turnUrls' <<<"$TURN_RESULT_JSON")"
+          stun_urls="$(jq -r '.stunUrls' <<<"$TURN_RESULT_JSON")"
+          jq -n \
+            --arg callStunUrls "$stun_urls" \
+            --arg callTurnUrls "$turn_urls" \
+            --arg callTurnUsername "$BACKCHAT_CALL_TURN_USERNAME" \
+            --arg callTurnCredential "$BACKCHAT_CALL_TURN_CREDENTIAL" \
+            '[
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_STUN_URLS",Value:$callStunUrls},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_URLS",Value:$callTurnUrls},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_USERNAME",Value:$callTurnUsername},
+              {Namespace:"aws:elasticbeanstalk:application:environment",OptionName:"BACKCHAT_CALL_TURN_CREDENTIAL",Value:$callTurnCredential}
+            ]' > option-settings.json
+
+          aws elasticbeanstalk update-environment \
+            --environment-name "$EB_ENVIRONMENT_NAME" \
+            --option-settings file://option-settings.json
+
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "$EB_ENVIRONMENT_NAME"
+
+      - name: Describe updated Elastic Beanstalk environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENVIRONMENT_NAME" \
+            --query 'Environments[0].[Status,Health,HealthStatus]' \
+            --output text
+
+      - name: Upload TURN relay details artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: turn-relay-details
+          path: turn-relay-details.json
+          if-no-files-found: error
+
+      - name: Add job summary
+        env:
+          TURN_RESULT_JSON: ${{ steps.provision.outputs.result_json }}
+        shell: bash
+        run: |
+          {
+            echo "## TURN relay ready"
+            echo
+            echo "- Public IP: $(jq -r '.publicIp' <<<"$TURN_RESULT_JSON")"
+            echo "- TURN URLs: \`$(jq -r '.turnUrls' <<<"$TURN_RESULT_JSON")\`"
+            echo "- STUN URLs: \`$(jq -r '.stunUrls' <<<"$TURN_RESULT_JSON")\`"
+            echo "- Instance ID: \`$(jq -r '.instanceId' <<<"$TURN_RESULT_JSON")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
