@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(24) NOT NULL,
     normalized_username VARCHAR(24) NOT NULL,
     recovery_email VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NULL,
+    password_updated_at DATETIME NULL,
     avatar_url TEXT NULL,
     quote_text VARCHAR(160) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

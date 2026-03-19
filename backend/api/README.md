@@ -2,7 +2,7 @@
 
 This folder contains a lightweight PHP + MySQL API for:
 
-- Username sign in/create (passwordless)
+- Username sign in/create with optional passwords
 - Recovery email username lookup
 - Invite by username
 - Contact sync

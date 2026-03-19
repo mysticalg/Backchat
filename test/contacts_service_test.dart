@@ -95,6 +95,7 @@ class _DisabledApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) {
     throw UnimplementedError();
   }
@@ -130,10 +131,12 @@ void main() {
     final alice = await authService.signInOrCreateWithUsername(
       username: 'alice_01',
       recoveryEmail: 'alice@example.com',
+      password: '',
     );
     await authService.signInOrCreateWithUsername(
       username: 'bob_01',
       recoveryEmail: 'bob@example.com',
+      password: '',
     );
 
     final invite = await contactsService.inviteByUsername(
@@ -152,10 +155,12 @@ void main() {
     final alice = await authService.signInOrCreateWithUsername(
       username: 'alice_01',
       recoveryEmail: 'alice@example.com',
+      password: '',
     );
     await authService.signInOrCreateWithUsername(
       username: 'bob_01',
       recoveryEmail: 'bob@example.com',
+      password: '',
     );
 
     await contactsService.inviteByUsername(
@@ -182,6 +187,7 @@ void main() {
     final alice = await authService.signInOrCreateWithUsername(
       username: 'alice_01',
       recoveryEmail: 'alice@example.com',
+      password: '',
     );
 
     final invite = await contactsService.inviteByUsername(

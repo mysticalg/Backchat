@@ -65,6 +65,7 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -217,6 +218,7 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async =>
       <String, dynamic>{};
 
@@ -296,9 +298,10 @@ class _SuccessfulUsernameApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     return <String, dynamic>{
-      'status': 'signed_in',
+      'status': password.isNotEmpty ? 'password_set' : 'signed_in',
       'user': <String, dynamic>{
         'id': 'username:${username.toLowerCase()}',
         'username': username,
@@ -369,10 +372,12 @@ void main() {
     final created = await authService.signInOrCreateWithUsername(
       username: 'fallback_user',
       recoveryEmail: 'fallback_user@example.com',
+      password: '',
     );
     final signedIn = await authService.signInOrCreateWithUsername(
       username: 'fallback_user',
       recoveryEmail: '',
+      password: '',
     );
 
     expect(created.status, UsernameSignInStatus.created);
@@ -389,6 +394,7 @@ void main() {
     await authService.signInOrCreateWithUsername(
       username: 'recover_user',
       recoveryEmail: 'recover_user@example.com',
+      password: '',
     );
     final String? recovered =
         await authService.recoverUsernameForEmail('recover_user@example.com');
@@ -404,6 +410,7 @@ void main() {
         await authService.signInOrCreateWithUsername(
       username: 'api_user',
       recoveryEmail: 'api_user@example.com',
+      password: '',
     );
     final List<RememberedUsernameAccount> remembered =
         await authService.loadRememberedUsernameAccounts();
@@ -423,10 +430,12 @@ void main() {
     await authService.signInOrCreateWithUsername(
       username: 'api_user',
       recoveryEmail: 'api_user@example.com',
+      password: '',
     );
     await authService.signInOrCreateWithUsername(
       username: 'api_user',
       recoveryEmail: '',
+      password: '',
     );
     final List<RememberedUsernameAccount> remembered =
         await authService.loadRememberedUsernameAccounts();
@@ -434,6 +443,88 @@ void main() {
     expect(remembered, hasLength(1));
     expect(remembered.first.username, 'api_user');
     expect(remembered.first.recoveryEmail, 'api_user@example.com');
+  });
+
+  test('local password-protected username requires a password later', () async {
+    final AuthService authService =
+        AuthService(apiService: _FailingConfiguredApiClient());
+
+    final UsernameSignInResult created =
+        await authService.signInOrCreateWithUsername(
+      username: 'secure_user',
+      recoveryEmail: 'secure_user@example.com',
+      password: 'correct horse battery',
+    );
+    final UsernameSignInResult missingPassword =
+        await authService.signInOrCreateWithUsername(
+      username: 'secure_user',
+      recoveryEmail: '',
+      password: '',
+    );
+    final UsernameSignInResult wrongPassword =
+        await authService.signInOrCreateWithUsername(
+      username: 'secure_user',
+      recoveryEmail: '',
+      password: 'wrongpass1',
+    );
+    final UsernameSignInResult signedIn =
+        await authService.signInOrCreateWithUsername(
+      username: 'secure_user',
+      recoveryEmail: '',
+      password: 'correct horse battery',
+    );
+
+    expect(created.status, UsernameSignInStatus.created);
+    expect(missingPassword.status, UsernameSignInStatus.passwordRequired);
+    expect(wrongPassword.status, UsernameSignInStatus.passwordIncorrect);
+    expect(signedIn.status, UsernameSignInStatus.signedIn);
+  });
+
+  test(
+      'existing passwordless username can be upgraded with a password and matching recovery email',
+      () async {
+    final AuthService authService =
+        AuthService(apiService: _FailingConfiguredApiClient());
+
+    await authService.signInOrCreateWithUsername(
+      username: 'legacy_user',
+      recoveryEmail: 'legacy_user@example.com',
+      password: '',
+    );
+    final UsernameSignInResult upgraded =
+        await authService.signInOrCreateWithUsername(
+      username: 'legacy_user',
+      recoveryEmail: 'legacy_user@example.com',
+      password: 'legacypass1',
+    );
+    final UsernameSignInResult signedIn =
+        await authService.signInOrCreateWithUsername(
+      username: 'legacy_user',
+      recoveryEmail: '',
+      password: 'legacypass1',
+    );
+
+    expect(upgraded.status, UsernameSignInStatus.passwordSet);
+    expect(signedIn.status, UsernameSignInStatus.signedIn);
+  });
+
+  test('api-backed password sign-ins remember that the account is secured',
+      () async {
+    final AuthService authService =
+        AuthService(apiService: _SuccessfulUsernameApiClient());
+
+    final UsernameSignInResult result =
+        await authService.signInOrCreateWithUsername(
+      username: 'api_secure',
+      recoveryEmail: 'api_secure@example.com',
+      password: 'apisecure1',
+    );
+    final List<RememberedUsernameAccount> remembered =
+        await authService.loadRememberedUsernameAccounts();
+
+    expect(result.status, UsernameSignInStatus.passwordSet);
+    expect(remembered, hasLength(1));
+    expect(remembered.first.hasPassword, isTrue);
   });
 
   test('social auth uses desktop process launcher on Windows first', () async {

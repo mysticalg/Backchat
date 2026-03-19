@@ -172,6 +172,29 @@ function bc_validate_email(string $email): bool
     return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
 }
 
+function bc_validate_password(string $password): bool
+{
+    $length = strlen($password);
+    return $length >= 8 && $length <= 72;
+}
+
+function bc_password_hash_value(string $password): string
+{
+    $hash = password_hash($password, PASSWORD_DEFAULT);
+    if (!is_string($hash) || $hash === '') {
+        bc_fail('password_hash_failed', 'Could not secure your password right now.', 500);
+    }
+    return $hash;
+}
+
+function bc_password_verify_value(string $password, string $hash): bool
+{
+    if ($hash === '') {
+        return false;
+    }
+    return password_verify($password, $hash);
+}
+
 function bc_normalize_username(string $username): string
 {
     return strtolower(trim($username));

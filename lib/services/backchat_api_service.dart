@@ -82,6 +82,7 @@ abstract class BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   });
 
   Future<String?> recoverUsernameForEmail(String recoveryEmail);
@@ -167,12 +168,14 @@ class BackchatApiService implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     final Map<String, dynamic> payload = await _postJson(
       '/auth_username.php',
       <String, dynamic>{
         'username': username,
         'recoveryEmail': recoveryEmail,
+        'password': password,
       },
       requiresAuth: false,
     );

@@ -43,6 +43,16 @@ function bc_setup_ensure_profile_columns(PDO $pdo): void
     }
 }
 
+function bc_setup_ensure_password_columns(PDO $pdo): void
+{
+    if (!bc_setup_column_exists($pdo, 'users', 'password_hash')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NULL AFTER recovery_email');
+    }
+    if (!bc_setup_column_exists($pdo, 'users', 'password_updated_at')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN password_updated_at DATETIME NULL AFTER password_hash');
+    }
+}
+
 function bc_setup_ensure_call_schema(PDO $pdo): void
 {
     if (bc_setup_table_exists($pdo, 'call_sessions')) {
@@ -154,6 +164,7 @@ try {
             $pdo->exec($statement);
         }
     }
+    bc_setup_ensure_password_columns($pdo);
     bc_setup_ensure_profile_columns($pdo);
     bc_setup_ensure_call_schema($pdo);
     bc_json([

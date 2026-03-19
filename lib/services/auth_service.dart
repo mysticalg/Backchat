@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,9 +26,15 @@ typedef BrowserProcessLauncher = Future<bool> Function(
 enum UsernameSignInStatus {
   signedIn,
   created,
+  passwordSet,
   invalidUsername,
   usernameNeedsRecoveryEmail,
   invalidRecoveryEmail,
+  invalidPassword,
+  passwordRequired,
+  passwordIncorrect,
+  passwordSetupNeedsRecoveryEmail,
+  recoveryEmailMismatch,
   recoveryEmailAlreadyInUse,
   serverUnavailable,
 }
@@ -49,12 +56,14 @@ class RememberedUsernameAccount {
     required this.username,
     required this.normalizedUsername,
     required this.recoveryEmail,
+    required this.hasPassword,
     this.lastUsedAt,
   });
 
   final String username;
   final String normalizedUsername;
   final String recoveryEmail;
+  final bool hasPassword;
   final DateTime? lastUsedAt;
 }
 
@@ -63,12 +72,14 @@ class _UsernameAccount {
     required this.username,
     required this.normalizedUsername,
     required this.recoveryEmail,
+    required this.passwordHash,
     required this.lastUsedAtEpochMs,
   });
 
   final String username;
   final String normalizedUsername;
   final String recoveryEmail;
+  final String passwordHash;
   final int lastUsedAtEpochMs;
 
   factory _UsernameAccount.fromJson(Map<String, dynamic> json) {
@@ -76,6 +87,7 @@ class _UsernameAccount {
       username: json['username']?.toString() ?? '',
       normalizedUsername: json['normalizedUsername']?.toString() ?? '',
       recoveryEmail: json['recoveryEmail']?.toString() ?? '',
+      passwordHash: json['passwordHash']?.toString() ?? '',
       lastUsedAtEpochMs: _parseEpochMs(json['lastUsedAtEpochMs']),
     );
   }
@@ -85,6 +97,7 @@ class _UsernameAccount {
       'username': username,
       'normalizedUsername': normalizedUsername,
       'recoveryEmail': recoveryEmail,
+      'passwordHash': passwordHash,
       'lastUsedAtEpochMs': lastUsedAtEpochMs,
     };
   }
@@ -93,12 +106,14 @@ class _UsernameAccount {
     String? username,
     String? normalizedUsername,
     String? recoveryEmail,
+    String? passwordHash,
     int? lastUsedAtEpochMs,
   }) {
     return _UsernameAccount(
       username: username ?? this.username,
       normalizedUsername: normalizedUsername ?? this.normalizedUsername,
       recoveryEmail: recoveryEmail ?? this.recoveryEmail,
+      passwordHash: passwordHash ?? this.passwordHash,
       lastUsedAtEpochMs: lastUsedAtEpochMs ?? this.lastUsedAtEpochMs,
     );
   }
@@ -108,6 +123,7 @@ class _UsernameAccount {
       username: username,
       normalizedUsername: normalizedUsername,
       recoveryEmail: recoveryEmail,
+      hasPassword: passwordHash.isNotEmpty,
       lastUsedAt: lastUsedAtEpochMs > 0
           ? DateTime.fromMillisecondsSinceEpoch(lastUsedAtEpochMs, isUtc: true)
           : null,
@@ -150,7 +166,8 @@ class AuthService {
     return _usernamePattern.hasMatch(username.trim());
   }
 
-  Future<List<RememberedUsernameAccount>> loadRememberedUsernameAccounts() async {
+  Future<List<RememberedUsernameAccount>>
+      loadRememberedUsernameAccounts() async {
     final List<_UsernameAccount> accounts = await _readUsernameAccounts();
     return accounts
         .map((_UsernameAccount account) => account.toRememberedAccount())
@@ -160,15 +177,18 @@ class AuthService {
   Future<UsernameSignInResult> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     final String cleanedUsername = username.trim();
     final String cleanedRecoveryEmail = recoveryEmail.trim();
+    final String submittedPassword = password;
     if (_apiService.isConfigured) {
       try {
         final Map<String, dynamic> response =
             await _apiService.signInOrCreateWithUsername(
           username: cleanedUsername,
           recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
         final String status = response['status']?.toString() ?? '';
         final AppUser? user = response['user'] is Map<String, dynamic>
@@ -180,9 +200,23 @@ class AuthService {
                 ? user!.username
                 : cleanedUsername,
             recoveryEmail: cleanedRecoveryEmail,
+            password: submittedPassword,
           );
           return UsernameSignInResult(
             status: UsernameSignInStatus.signedIn,
+            user: user,
+          );
+        }
+        if (status == 'password_set') {
+          await _rememberUsernameAccount(
+            username: user?.username.isNotEmpty == true
+                ? user!.username
+                : cleanedUsername,
+            recoveryEmail: cleanedRecoveryEmail,
+            password: submittedPassword,
+          );
+          return UsernameSignInResult(
+            status: UsernameSignInStatus.passwordSet,
             user: user,
           );
         }
@@ -192,6 +226,7 @@ class AuthService {
                 ? user!.username
                 : cleanedUsername,
             recoveryEmail: cleanedRecoveryEmail,
+            password: submittedPassword,
           );
           return UsernameSignInResult(
             status: UsernameSignInStatus.created,
@@ -201,6 +236,7 @@ class AuthService {
         return _signInOrCreateWithUsernameLocal(
           username: cleanedUsername,
           recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       } on BackchatApiException catch (e) {
         if (e.status == 'invalid_username') {
@@ -218,6 +254,31 @@ class AuthService {
             status: UsernameSignInStatus.invalidRecoveryEmail,
           );
         }
+        if (e.status == 'invalid_password') {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.invalidPassword,
+          );
+        }
+        if (e.status == 'password_required') {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordRequired,
+          );
+        }
+        if (e.status == 'password_incorrect') {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordIncorrect,
+          );
+        }
+        if (e.status == 'password_setup_needs_recovery_email') {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordSetupNeedsRecoveryEmail,
+          );
+        }
+        if (e.status == 'recovery_email_mismatch') {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.recoveryEmailMismatch,
+          );
+        }
         if (e.status == 'recovery_email_already_in_use') {
           return UsernameSignInResult(
             status: UsernameSignInStatus.recoveryEmailAlreadyInUse,
@@ -227,11 +288,13 @@ class AuthService {
         return _signInOrCreateWithUsernameLocal(
           username: cleanedUsername,
           recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       } catch (_) {
         return _signInOrCreateWithUsernameLocal(
           username: cleanedUsername,
           recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       }
     }
@@ -239,12 +302,14 @@ class AuthService {
     return _signInOrCreateWithUsernameLocal(
       username: cleanedUsername,
       recoveryEmail: cleanedRecoveryEmail,
+      password: submittedPassword,
     );
   }
 
   Future<UsernameSignInResult> _signInOrCreateWithUsernameLocal({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     final String cleanedUsername = username.trim();
     final String normalizedUsername = cleanedUsername.toLowerCase();
@@ -262,9 +327,73 @@ class AuthService {
       }
     }
     if (existing != null) {
+      if (existing.passwordHash.isNotEmpty) {
+        if (password.isEmpty) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordRequired,
+          );
+        }
+        if (!bcValidatePassword(password)) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.invalidPassword,
+          );
+        }
+        final String submittedHash =
+            await _localPasswordHash(normalizedUsername, password);
+        if (submittedHash != existing.passwordHash) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordIncorrect,
+          );
+        }
+        await _rememberUsernameAccount(
+          username: existing.username,
+          recoveryEmail: existing.recoveryEmail,
+          password: password,
+        );
+        return UsernameSignInResult(
+          status: UsernameSignInStatus.signedIn,
+          user: _toAppUser(existing),
+        );
+      }
+
+      if (password.isNotEmpty) {
+        if (!bcValidatePassword(password)) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.invalidPassword,
+          );
+        }
+        final String cleanedEmail = recoveryEmail.trim();
+        if (cleanedEmail.isEmpty) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.passwordSetupNeedsRecoveryEmail,
+          );
+        }
+        if (!_emailPattern.hasMatch(cleanedEmail)) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.invalidRecoveryEmail,
+          );
+        }
+        if (cleanedEmail.toLowerCase() !=
+            existing.recoveryEmail.toLowerCase()) {
+          return const UsernameSignInResult(
+            status: UsernameSignInStatus.recoveryEmailMismatch,
+          );
+        }
+        await _rememberUsernameAccount(
+          username: existing.username,
+          recoveryEmail: existing.recoveryEmail,
+          password: password,
+        );
+        return UsernameSignInResult(
+          status: UsernameSignInStatus.passwordSet,
+          user: _toAppUser(existing),
+        );
+      }
+
       await _rememberUsernameAccount(
         username: existing.username,
         recoveryEmail: existing.recoveryEmail,
+        password: '',
       );
       return UsernameSignInResult(
         status: UsernameSignInStatus.signedIn,
@@ -280,6 +409,11 @@ class AuthService {
     if (!_emailPattern.hasMatch(cleanedEmail)) {
       return const UsernameSignInResult(
           status: UsernameSignInStatus.invalidRecoveryEmail);
+    }
+    if (password.isNotEmpty && !bcValidatePassword(password)) {
+      return const UsernameSignInResult(
+        status: UsernameSignInStatus.invalidPassword,
+      );
     }
 
     final String normalizedEmail = cleanedEmail.toLowerCase();
@@ -301,11 +435,15 @@ class AuthService {
       username: cleanedUsername,
       normalizedUsername: normalizedUsername,
       recoveryEmail: cleanedEmail,
+      passwordHash: password.isNotEmpty
+          ? await _localPasswordHash(normalizedUsername, password)
+          : '',
       lastUsedAtEpochMs: DateTime.now().toUtc().millisecondsSinceEpoch,
     );
     await _rememberUsernameAccount(
       username: created.username,
       recoveryEmail: created.recoveryEmail,
+      password: password,
     );
 
     return UsernameSignInResult(
@@ -424,6 +562,7 @@ class AuthService {
   Future<void> _rememberUsernameAccount({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) async {
     final String cleanedUsername = username.trim();
     final String normalizedUsername = cleanedUsername.toLowerCase();
@@ -438,6 +577,10 @@ class AuthService {
     );
     final String cleanedEmail = recoveryEmail.trim();
     final int nowMs = DateTime.now().toUtc().millisecondsSinceEpoch;
+    String? nextPasswordHash;
+    if (password.isNotEmpty && bcValidatePassword(password)) {
+      nextPasswordHash = await _localPasswordHash(normalizedUsername, password);
+    }
 
     if (existingIndex >= 0) {
       final _UsernameAccount existing = accounts.removeAt(existingIndex);
@@ -448,6 +591,7 @@ class AuthService {
           normalizedUsername: normalizedUsername,
           recoveryEmail:
               cleanedEmail.isNotEmpty ? cleanedEmail : existing.recoveryEmail,
+          passwordHash: nextPasswordHash ?? existing.passwordHash,
           lastUsedAtEpochMs: nowMs,
         ),
       );
@@ -465,10 +609,26 @@ class AuthService {
         username: cleanedUsername,
         normalizedUsername: normalizedUsername,
         recoveryEmail: cleanedEmail,
+        passwordHash: nextPasswordHash ?? '',
         lastUsedAtEpochMs: nowMs,
       ),
     );
     await _writeUsernameAccounts(accounts);
+  }
+
+  bool bcValidatePassword(String password) {
+    return password.length >= 8 && password.length <= 72;
+  }
+
+  Future<String> _localPasswordHash(
+    String normalizedUsername,
+    String password,
+  ) async {
+    final HashAlgorithm hashAlgorithm = Sha256();
+    final Hash digest = await hashAlgorithm.hash(
+      utf8.encode('backchat-local:$normalizedUsername:$password'),
+    );
+    return base64UrlEncode(digest.bytes);
   }
 
   AppUser _toAppUser(_UsernameAccount account) {

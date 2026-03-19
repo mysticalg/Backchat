@@ -77,6 +77,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
       TextEditingController();
   final TextEditingController _recoveryEmailController =
       TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _inviteUsernameController =
       TextEditingController();
   final TextEditingController _messageController = TextEditingController();
@@ -84,6 +85,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   List<RememberedUsernameAccount> _rememberedAccounts =
       <RememberedUsernameAccount>[];
   String? _rememberedAccountSelection;
+  bool _obscurePassword = true;
   bool _isAuthBusy = false;
   bool _isInviteBusy = false;
   bool _isSyncingMessages = false;
@@ -111,6 +113,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _usernameController.dispose();
     _usernameRecoveryEmailController.dispose();
     _recoveryEmailController.dispose();
+    _passwordController.dispose();
     _inviteUsernameController.dispose();
     _messageController.dispose();
     _messageFocusNode.dispose();
@@ -599,8 +602,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                         value: draft.shareLocalCandidates,
                         onChanged: (bool value) {
                           setDialogState(() {
-                            draft =
-                                draft.copyWith(shareLocalCandidates: value);
+                            draft = draft.copyWith(shareLocalCandidates: value);
                           });
                         },
                         title: const Text('Share local/VPN addresses'),
@@ -679,6 +681,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           await _authService.signInOrCreateWithUsername(
         username: _usernameController.text,
         recoveryEmail: _usernameRecoveryEmailController.text,
+        password: _passwordController.text,
       );
 
       switch (result.status) {
@@ -695,6 +698,14 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
             'Username created and linked to your recovery email.',
           );
           break;
+        case UsernameSignInStatus.passwordSet:
+          if (result.user != null) {
+            await _activateUserSession(result.user!);
+          }
+          _showAuthMessage(
+            'Password saved for this username. Use it next time you sign in.',
+          );
+          break;
         case UsernameSignInStatus.invalidUsername:
           _showAuthMessage(
             'Choose 3-24 characters: letters, numbers, or underscore.',
@@ -707,6 +718,26 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           break;
         case UsernameSignInStatus.invalidRecoveryEmail:
           _showAuthMessage('Enter a valid recovery email address.');
+          break;
+        case UsernameSignInStatus.invalidPassword:
+          _showAuthMessage('Use a password between 8 and 72 characters.');
+          break;
+        case UsernameSignInStatus.passwordRequired:
+          _showAuthMessage(
+              'This username is password-protected. Enter the password to continue.');
+          break;
+        case UsernameSignInStatus.passwordIncorrect:
+          _showAuthMessage('That password is incorrect for this username.');
+          break;
+        case UsernameSignInStatus.passwordSetupNeedsRecoveryEmail:
+          _showAuthMessage(
+            'Add your recovery email to secure this older username with a password.',
+          );
+          break;
+        case UsernameSignInStatus.recoveryEmailMismatch:
+          _showAuthMessage(
+            'That recovery email does not match this username, so the password was not changed.',
+          );
           break;
         case UsernameSignInStatus.recoveryEmailAlreadyInUse:
           _showAuthMessage(
@@ -737,7 +768,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     }
 
     _usernameController.text = username;
-    _usernameRecoveryEmailController.text = _recoveryEmailController.text.trim();
+    _usernameRecoveryEmailController.text =
+        _recoveryEmailController.text.trim();
     final String normalizedUsername = username.trim().toLowerCase();
     setState(() {
       _rememberedAccountSelection = _rememberedAccounts.any(
@@ -1028,7 +1060,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Sign in with a username and recovery email. Saved sign-ins stay on this device so you can pick them again later.',
+                  'Sign in with a username, recovery email, and optional password. Saved sign-ins stay on this device so you can pick them again later.',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
@@ -1045,7 +1077,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                               DropdownMenuItem<String>(
                             value: account.normalizedUsername,
                             child: Text(
-                              '${account.username}  |  ${account.recoveryEmail}',
+                              '${account.username}  |  ${account.recoveryEmail}${account.hasPassword ? '  |  secured' : ''}',
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -1093,9 +1125,44 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                   controller: _usernameRecoveryEmailController,
                   keyboardType: TextInputType.emailAddress,
                   decoration: const InputDecoration(
-                    labelText: 'Recovery email (required for new usernames)',
+                    labelText:
+                        'Recovery email (required for new usernames and password setup)',
                     border: OutlineInputBorder(),
                   ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText:
+                        'Password (optional at first, required once you set one)',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      onPressed: () {
+                        setState(() {
+                          _obscurePassword = !_obscurePassword;
+                        });
+                      },
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Legacy usernames can still sign in without a password until you add one. New passwords must be 8-72 characters.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Use recovery email only if you forgot your username.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
@@ -1343,21 +1410,23 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                                 children: <Widget>[
                                   IconButton.filledTonal(
                                     tooltip: 'Start voice call',
-                                    onPressed: _callService.state.isInProgress &&
-                                            _callService.state.peer?.id !=
-                                                selectedContact.id
-                                        ? null
-                                        : () => _startCall(CallKind.audio),
+                                    onPressed:
+                                        _callService.state.isInProgress &&
+                                                _callService.state.peer?.id !=
+                                                    selectedContact.id
+                                            ? null
+                                            : () => _startCall(CallKind.audio),
                                     icon: const Icon(Icons.call_outlined),
                                   ),
                                   const SizedBox(height: 8),
                                   IconButton.filledTonal(
                                     tooltip: 'Start video call',
-                                    onPressed: _callService.state.isInProgress &&
-                                            _callService.state.peer?.id !=
-                                                selectedContact.id
-                                        ? null
-                                        : () => _startCall(CallKind.video),
+                                    onPressed:
+                                        _callService.state.isInProgress &&
+                                                _callService.state.peer?.id !=
+                                                    selectedContact.id
+                                            ? null
+                                            : () => _startCall(CallKind.video),
                                     icon: const Icon(Icons.videocam_outlined),
                                   ),
                                 ],
@@ -1574,8 +1643,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                                   ? Text(
                                       peer.displayName.characters.first
                                           .toUpperCase(),
-                                      style:
-                                          theme.textTheme.headlineSmall?.copyWith(
+                                      style: theme.textTheme.headlineSmall
+                                          ?.copyWith(
                                         color: theme.colorScheme.onPrimary,
                                       ),
                                     )
@@ -1609,8 +1678,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                   child: RTCVideoView(
                     _callService.localRenderer,
                     mirror: true,
-                    objectFit:
-                        RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                   ),
                 ),
               ),

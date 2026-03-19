@@ -87,6 +87,7 @@ class _FakeApiClient implements BackchatApiClient {
   Future<Map<String, dynamic>> signInOrCreateWithUsername({
     required String username,
     required String recoveryEmail,
+    required String password,
   }) {
     throw UnimplementedError();
   }
