@@ -759,6 +759,37 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     }
   }
 
+  Future<void> _continueWithSocialProvider({
+    required String providerLabel,
+    required Future<AppUser?> Function() signIn,
+  }) async {
+    if (_isAuthBusy) {
+      return;
+    }
+
+    setState(() => _isAuthBusy = true);
+    try {
+      final AppUser? user = await signIn();
+      if (user == null) {
+        _showAuthMessage(
+          '$providerLabel sign-in completed, but no account was returned.',
+        );
+        return;
+      }
+      await _activateUserSession(user);
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage(
+        '$providerLabel sign-in failed unexpectedly. Please try again.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isAuthBusy = false);
+      }
+    }
+  }
+
   Future<void> _recoverUsername() async {
     final String? username = await _authService
         .recoverUsernameForEmail(_recoveryEmailController.text);
@@ -1175,6 +1206,58 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
                         )
                       : const Icon(Icons.login),
                   label: Text(_isAuthBusy ? 'Working...' : 'Continue'),
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 8),
+                Text(
+                  'Or continue with',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Backchat opens your browser to finish sign-in securely.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  alignment: WrapAlignment.center,
+                  children: <Widget>[
+                    OutlinedButton.icon(
+                      onPressed: _isAuthBusy
+                          ? null
+                          : () => _continueWithSocialProvider(
+                                providerLabel: 'Google',
+                                signIn: _authService.signInWithGoogle,
+                              ),
+                      icon: const Icon(Icons.g_mobiledata),
+                      label: const Text('Google'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _isAuthBusy
+                          ? null
+                          : () => _continueWithSocialProvider(
+                                providerLabel: 'Facebook',
+                                signIn: _authService.signInWithFacebook,
+                              ),
+                      icon: const Icon(Icons.facebook),
+                      label: const Text('Facebook'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _isAuthBusy
+                          ? null
+                          : () => _continueWithSocialProvider(
+                                providerLabel: 'X',
+                                signIn: _authService.signInWithX,
+                              ),
+                      icon: const Icon(Icons.alternate_email),
+                      label: const Text('X'),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 20),
                 const Divider(),
