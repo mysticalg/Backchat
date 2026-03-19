@@ -8,6 +8,8 @@ Backchat is a cross-platform encrypted messaging app scaffold targeting:
 - Android
 - iOS (optional from the same codebase)
 
+Live page: [mysticalg.github.io/Backchat](https://mysticalg.github.io/Backchat/)
+
 It includes:
 
 - Browser OAuth sign-in for Google, Facebook, and X
@@ -277,3 +279,8 @@ Server files are in `backend/api/`.
 > API calls. Native app HTTP clients cannot execute that JavaScript, which
 > breaks JSON API calls. If this happens, move the API to a host without that
 > interstitial.
+
+## Support
+
+If you'd like to support this project, you can buy me a coffee:
+[buymeacoffee.com/dhooksterm](https://buymeacoffee.com/dhooksterm)
