@@ -458,6 +458,53 @@ def terms_body() -> str:
     """
 
 
+def delete_account_body() -> str:
+    return """
+    <section class="legal-section">
+      <h2>Request account deletion</h2>
+      <p>
+        To request deletion of your Backchat account and associated hosted data, open a support request through the
+        Backchat GitHub repository and include the username tied to the account you want deleted.
+      </p>
+      <p>
+        Support URL:
+        <a href="https://github.com/mysticalg/Backchat/issues">https://github.com/mysticalg/Backchat/issues</a>
+      </p>
+    </section>
+    <section class="legal-section">
+      <h2>What to include</h2>
+      <ul>
+        <li>Your Backchat username.</li>
+        <li>The recovery email address connected to that username, if you still have access to it.</li>
+        <li>A short note saying you are requesting account deletion.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>What will be deleted</h2>
+      <ul>
+        <li>Hosted account profile data such as username, recovery email, avatar URL, and quote.</li>
+        <li>Hosted contact relationships connected to the account.</li>
+        <li>Hosted session records and account-linked call signaling records that can be removed as part of cleanup.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>What may remain temporarily</h2>
+      <ul>
+        <li>Operational logs, backups, and security records may remain for a limited retention period before rotation.</li>
+        <li>Conversation history cached locally on devices is not automatically removed from other users' computers.</li>
+        <li>Messages already delivered to another user may remain in that user's local history.</li>
+      </ul>
+    </section>
+    <section class="legal-section">
+      <h2>Optional data deletion without account deletion</h2>
+      <p>
+        Backchat does not currently offer a separate self-service tool to delete only part of your hosted data while
+        keeping the account active. If this changes, this page will be updated.
+      </p>
+    </section>
+    """
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     release = fetch_latest_release()
@@ -492,6 +539,20 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
+    (OUTPUT_DIR / "delete-account.html").write_text(
+        render_legal_page(
+            title="Backchat Account Deletion",
+            description=(
+                "Request deletion of your Backchat account and associated hosted data, "
+                "including what is deleted, what may remain temporarily, and how to contact support."
+            ),
+            canonical_url=f"{PAGES_URL}delete-account.html",
+            article_title="Account Deletion",
+            effective_date="March 19, 2026",
+            body_html=delete_account_body(),
+        ),
+        encoding="utf-8",
+    )
     (OUTPUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
     copy_static_file("styles.css")
     copy_static_file("robots.txt")
@@ -508,6 +569,10 @@ def main() -> None:
   </url>
   <url>
     <loc>{html.escape(f"{PAGES_URL}terms.html")}</loc>
+    <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
+  </url>
+  <url>
+    <loc>{html.escape(f"{PAGES_URL}delete-account.html")}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
 </urlset>
