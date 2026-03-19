@@ -51,6 +51,7 @@ app.*.map.json
 
 # Local browser automation artifacts
 /.playwright-cli/
+/output/
 
 # Local release builds and test artifacts
 /releases/
