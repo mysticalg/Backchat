@@ -145,7 +145,7 @@ class BackchatApiService implements BackchatApiClient {
 
   static const String _tokenStorageKey = 'backchat_api_token_v1';
   static const String _defaultApiBaseUrl =
-      'http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com';
+      'https://d2axmspob6mqyx.cloudfront.net';
   static const String _configuredApiBaseUrl =
       String.fromEnvironment('BACKCHAT_API_BASE_URL');
   static const Duration _requestTimeout = Duration(seconds: 8);
@@ -619,7 +619,7 @@ class BackchatApiService implements BackchatApiClient {
     if (looksLikeHtml) {
       return 'API returned HTML instead of JSON at $uri. '
           'Check BACKCHAT_API_BASE_URL and ensure it points to the API root URL '
-          '(for example http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com).';
+          '(for example https://d2axmspob6mqyx.cloudfront.net).';
     }
 
     return 'API did not return JSON at $uri.';

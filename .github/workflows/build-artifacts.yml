@@ -57,6 +57,8 @@ jobs:
     needs: prepare-release
     if: ${{ inputs.build_windows }}
     runs-on: windows-latest
+    env:
+      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,7 +72,13 @@ jobs:
         run: flutter pub get
 
       - name: Build Windows release
-        run: flutter build windows --release
+        shell: pwsh
+        run: |
+          if ($env:BACKCHAT_API_BASE_URL) {
+            flutter build windows --release --dart-define="BACKCHAT_API_BASE_URL=$env:BACKCHAT_API_BASE_URL"
+          } else {
+            flutter build windows --release
+          }
 
       - name: Package Windows release
         shell: pwsh
@@ -88,6 +96,8 @@ jobs:
     needs: prepare-release
     if: ${{ inputs.build_macos }}
     runs-on: macos-latest
+    env:
+      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,7 +111,14 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS release
-        run: flutter build macos --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=(--release)
+          if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          flutter build macos "${build_args[@]}"
 
       - name: Package macOS release
         shell: bash
@@ -120,6 +137,8 @@ jobs:
     needs: prepare-release
     if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
+    env:
+      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -145,7 +164,14 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux release
-        run: flutter build linux --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=(--release)
+          if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          flutter build linux "${build_args[@]}"
 
       - name: Package Linux release
         shell: bash
@@ -164,6 +190,8 @@ jobs:
     needs: prepare-release
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
+    env:
+      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -217,10 +245,24 @@ jobs:
           EOF
 
       - name: Build Android APK
-        run: flutter build apk --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=(--release)
+          if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          flutter build apk "${build_args[@]}"
 
       - name: Build Android app bundle
-        run: flutter build appbundle --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=(--release)
+          if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          flutter build appbundle "${build_args[@]}"
 
       - name: Package Android artifacts
         shell: bash
