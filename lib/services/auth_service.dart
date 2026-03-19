@@ -138,6 +138,18 @@ class _UsernameAccount {
   }
 }
 
+class _PendingOAuthSession {
+  const _PendingOAuthSession({
+    required this.provider,
+    required this.state,
+    required this.startedAt,
+  });
+
+  final String provider;
+  final String state;
+  final DateTime startedAt;
+}
+
 class AuthService {
   AuthService({
     BackchatApiClient? apiService,
@@ -150,10 +162,17 @@ class AuthService {
         _browserPlatform = browserPlatform ?? _detectBrowserLaunchPlatform();
 
   static const String _usernameAccountsStorageKey = 'username_accounts_v1';
+  static const String _pendingOAuthStateStorageKey = 'pending_oauth_state_v1';
+  static const String _pendingOAuthProviderStorageKey =
+      'pending_oauth_provider_v1';
+  static const String _pendingOAuthStartedAtStorageKey =
+      'pending_oauth_started_at_v1';
   static final RegExp _usernamePattern = RegExp(r'^[a-zA-Z0-9_]{3,24}$');
   static final RegExp _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
   static const Duration _oauthPollInterval = Duration(seconds: 2);
   static const int _oauthMaxPollAttempts = 90;
+  static const int _oauthResumePollAttempts = 6;
+  static const Duration _pendingOAuthLifetime = Duration(minutes: 12);
 
   final BackchatApiClient _apiService;
   final BrowserUrlLauncher _urlLauncher;
@@ -161,6 +180,57 @@ class AuthService {
   final BrowserLaunchPlatform _browserPlatform;
 
   bool get isRemoteApiEnabled => _apiService.isConfigured;
+
+  Future<AppUser?> tryRestoreAuthenticatedUser() async {
+    if (!_apiService.isConfigured) {
+      return null;
+    }
+
+    try {
+      return await _apiService.fetchMyProfile();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<AppUser?> tryResumePendingSocialSignIn() async {
+    if (!_apiService.isConfigured) {
+      return null;
+    }
+
+    final _PendingOAuthSession? pending = await _readPendingOAuthSession();
+    if (pending == null) {
+      return null;
+    }
+
+    final DateTime expiresAt =
+        pending.startedAt.toUtc().add(_pendingOAuthLifetime);
+    if (DateTime.now().toUtc().isAfter(expiresAt)) {
+      await _clearPendingOAuthSession();
+      return null;
+    }
+
+    try {
+      final AppUser? user = await _pollSocialOAuthState(
+        pending.state,
+        maxAttempts: _oauthResumePollAttempts,
+      );
+      if (user != null) {
+        await _clearPendingOAuthSession();
+      }
+      return user;
+    } on BackchatApiException catch (e) {
+      if (e.status == 'failed' ||
+          e.status == 'expired' ||
+          e.status == 'oauth_state_not_found' ||
+          e.status == 'oauth_timeout') {
+        await _clearPendingOAuthSession();
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   bool isValidUsernameFormat(String username) {
     return _usernamePattern.hasMatch(username.trim());
@@ -525,6 +595,7 @@ class AuthService {
 
   Future<void> signOut(AppUser user) async {
     await _apiService.clearToken();
+    await _clearPendingOAuthSession();
   }
 
   Future<List<_UsernameAccount>> _readUsernameAccounts() async {
@@ -674,19 +745,42 @@ class AuthService {
     }
     final SocialOAuthStartResult start =
         await _apiService.startSocialOAuth(provider);
+    await _writePendingOAuthSession(
+      provider: provider,
+      state: start.state,
+    );
     final Uri uri = Uri.parse(start.authorizationUrl);
     final bool launched = await _launchBrowser(uri);
     if (!launched) {
+      await _clearPendingOAuthSession();
       throw const BackchatApiException(
         status: 'oauth_launch_failed',
         message: 'Could not open browser for OAuth.',
       );
     }
 
-    for (int i = 0; i < _oauthMaxPollAttempts; i++) {
+    try {
+      final AppUser? user = await _pollSocialOAuthState(start.state);
+      await _clearPendingOAuthSession();
+      return user;
+    } on BackchatApiException catch (e) {
+      if (e.status == 'failed' ||
+          e.status == 'expired' ||
+          e.status == 'oauth_timeout') {
+        await _clearPendingOAuthSession();
+      }
+      rethrow;
+    }
+  }
+
+  Future<AppUser?> _pollSocialOAuthState(
+    String state, {
+    int maxAttempts = _oauthMaxPollAttempts,
+  }) async {
+    for (int i = 0; i < maxAttempts; i++) {
       await Future<void>.delayed(_oauthPollInterval);
       final SocialOAuthPollResult poll =
-          await _apiService.pollSocialOAuth(start.state);
+          await _apiService.pollSocialOAuth(state);
       if (poll.status == 'authorized') {
         return poll.user;
       }
@@ -709,6 +803,46 @@ class AuthService {
       status: 'oauth_timeout',
       message: 'OAuth login timed out before completion.',
     );
+  }
+
+  Future<void> _writePendingOAuthSession({
+    required String provider,
+    required String state,
+  }) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pendingOAuthProviderStorageKey, provider);
+    await prefs.setString(_pendingOAuthStateStorageKey, state);
+    await prefs.setInt(
+      _pendingOAuthStartedAtStorageKey,
+      DateTime.now().toUtc().millisecondsSinceEpoch,
+    );
+  }
+
+  Future<_PendingOAuthSession?> _readPendingOAuthSession() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String provider =
+        prefs.getString(_pendingOAuthProviderStorageKey)?.trim() ?? '';
+    final String state =
+        prefs.getString(_pendingOAuthStateStorageKey)?.trim() ?? '';
+    final int startedAtEpochMs =
+        prefs.getInt(_pendingOAuthStartedAtStorageKey) ?? 0;
+    if (provider.isEmpty || state.isEmpty || startedAtEpochMs <= 0) {
+      return null;
+    }
+
+    return _PendingOAuthSession(
+      provider: provider,
+      state: state,
+      startedAt:
+          DateTime.fromMillisecondsSinceEpoch(startedAtEpochMs, isUtc: true),
+    );
+  }
+
+  Future<void> _clearPendingOAuthSession() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingOAuthProviderStorageKey);
+    await prefs.remove(_pendingOAuthStateStorageKey);
+    await prefs.remove(_pendingOAuthStartedAtStorageKey);
   }
 
   Future<bool> _launchBrowser(Uri uri) async {

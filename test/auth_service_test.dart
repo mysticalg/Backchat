@@ -242,6 +242,38 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   }
 }
 
+class _RestorableRemoteSessionApiClient extends _SuccessfulSocialOAuthApiClient {
+  @override
+  Future<AppUser> fetchMyProfile() async {
+    return AppUser(
+      id: 'username:google_user',
+      username: 'google_user',
+      displayName: 'Google User',
+      avatarUrl: '',
+      provider: AuthProvider.google,
+    );
+  }
+}
+
+class _ResumableSocialOAuthApiClient extends _SuccessfulSocialOAuthApiClient {
+  int pollCount = 0;
+
+  @override
+  Future<SocialOAuthPollResult> pollSocialOAuth(String state) async {
+    pollCount += 1;
+    return SocialOAuthPollResult(
+      status: 'authorized',
+      user: AppUser(
+        id: 'username:google_resume',
+        username: 'google_resume',
+        displayName: 'Google Resume',
+        avatarUrl: '',
+        provider: AuthProvider.google,
+      ),
+    );
+  }
+}
+
 class _SuccessfulUsernameApiClient implements BackchatApiClient {
   @override
   bool get isConfigured => true;
@@ -525,6 +557,39 @@ void main() {
     expect(result.status, UsernameSignInStatus.passwordSet);
     expect(remembered, hasLength(1));
     expect(remembered.first.hasPassword, isTrue);
+  });
+
+  test('restores an authenticated remote user from the saved API session',
+      () async {
+    final AuthService authService = AuthService(
+      apiService: _RestorableRemoteSessionApiClient(),
+    );
+
+    final AppUser? user = await authService.tryRestoreAuthenticatedUser();
+
+    expect(user?.username, 'google_user');
+    expect(user?.provider, AuthProvider.google);
+  });
+
+  test('resumes a pending social sign-in after the app returns', () async {
+    final _ResumableSocialOAuthApiClient apiClient =
+        _ResumableSocialOAuthApiClient();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('pending_oauth_provider_v1', 'google');
+    await prefs.setString('pending_oauth_state_v1', 'resume-state');
+    await prefs.setInt(
+      'pending_oauth_started_at_v1',
+      DateTime.now().toUtc().millisecondsSinceEpoch,
+    );
+
+    final AuthService authService = AuthService(apiService: apiClient);
+
+    final AppUser? user = await authService.tryResumePendingSocialSignIn();
+
+    expect(user?.username, 'google_resume');
+    expect(user?.provider, AuthProvider.google);
+    expect(apiClient.pollCount, greaterThan(0));
+    expect(prefs.getString('pending_oauth_state_v1'), isNull);
   });
 
   test('social auth uses desktop process launcher on Windows first', () async {

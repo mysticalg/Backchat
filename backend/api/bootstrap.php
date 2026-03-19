@@ -172,6 +172,16 @@ function bc_validate_email(string $email): bool
     return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
 }
 
+function bc_email_local_part(string $email): string
+{
+    if (!bc_validate_email($email)) {
+        return '';
+    }
+
+    $parts = explode('@', $email, 2);
+    return trim((string)($parts[0] ?? ''));
+}
+
 function bc_validate_password(string $password): bool
 {
     $length = strlen($password);
@@ -518,15 +528,18 @@ function bc_fetch_oauth_profile(string $provider, string $accessToken): array
 
     if ($provider === 'google') {
         $providerUserId = trim((string)($profile['sub'] ?? ''));
-        $providerUsername = trim((string)($profile['email'] ?? ''));
-        $displayName = trim((string)($profile['name'] ?? ''));
         $email = trim((string)($profile['email'] ?? ''));
+        $providerUsername = bc_email_local_part($email);
+        $displayName = trim((string)($profile['name'] ?? ''));
         $avatarUrl = trim((string)($profile['picture'] ?? ''));
     } elseif ($provider === 'facebook') {
         $providerUserId = trim((string)($profile['id'] ?? ''));
-        $providerUsername = trim((string)($profile['username'] ?? ($profile['email'] ?? '')));
-        $displayName = trim((string)($profile['name'] ?? ''));
         $email = trim((string)($profile['email'] ?? ''));
+        $providerUsername = trim((string)($profile['username'] ?? ''));
+        if ($providerUsername === '') {
+            $providerUsername = bc_email_local_part($email);
+        }
+        $displayName = trim((string)($profile['name'] ?? ''));
         $avatarData = $profile['picture']['data'] ?? null;
         if (is_array($avatarData)) {
             $avatarUrl = trim((string)($avatarData['url'] ?? ''));

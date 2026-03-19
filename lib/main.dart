@@ -61,7 +61,8 @@ class BackchatHomePage extends StatefulWidget {
   State<BackchatHomePage> createState() => _BackchatHomePageState();
 }
 
-class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
+class _BackchatHomePageState extends State<BackchatHomePage>
+    with TrayListener, WidgetsBindingObserver {
   static const double _compactChatBreakpoint = 760;
   static const Duration _messagePollInterval = Duration(seconds: 1);
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
@@ -98,6 +99,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   bool _isInviteBusy = false;
   bool _isSyncingMessages = false;
   bool _isLoadingContacts = false;
+  bool _isRecoveringSession = false;
   Timer? _messagePollTimer;
   Timer? _contactRefreshTimer;
   Timer? _callAudioCueTimer;
@@ -108,10 +110,12 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _callService.addListener(_handleCallServiceChanged);
     _bootstrapCrypto();
     _configureTrayIfDesktop();
     _loadRememberedAccounts(autofillSingleAccount: true);
+    unawaited(_restoreSessionIfPossible());
   }
 
   @override
@@ -119,6 +123,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _stopMessagePolling();
     _stopContactRefresh();
     _stopCallAudioCue();
+    WidgetsBinding.instance.removeObserver(this);
     _callService.removeListener(_handleCallServiceChanged);
     _callService.dispose();
     _usernameController.dispose();
@@ -130,6 +135,13 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _messageFocusNode.dispose();
     _conversationScrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_handleAppResumed());
+    }
   }
 
   void _handleCallServiceChanged() {
@@ -376,6 +388,45 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     _startContactRefresh();
     await _syncMessages(showErrors: false);
     await _syncWindowUnreadCount();
+  }
+
+  Future<void> _restoreSessionIfPossible() async {
+    if (_currentUser != null || _isRecoveringSession) {
+      return;
+    }
+
+    _isRecoveringSession = true;
+    try {
+      final AppUser? resumedOAuthUser =
+          await _authService.tryResumePendingSocialSignIn();
+      if (resumedOAuthUser != null && mounted) {
+        await _activateUserSession(resumedOAuthUser);
+        return;
+      }
+
+      final AppUser? restoredUser =
+          await _authService.tryRestoreAuthenticatedUser();
+      if (restoredUser != null && mounted) {
+        await _activateUserSession(restoredUser);
+      }
+    } finally {
+      _isRecoveringSession = false;
+    }
+  }
+
+  Future<void> _handleAppResumed() async {
+    await _restoreSessionIfPossible();
+
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    _startMessagePolling();
+    _startContactRefresh();
+    await _callService.resumeForeground();
+    await _loadContacts();
+    await _syncMessages(showErrors: false);
   }
 
   void _startMessagePolling() {
@@ -860,6 +911,9 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         _showAuthMessage(
           '$providerLabel sign-in completed, but no account was returned.',
         );
+        return;
+      }
+      if (_currentUser?.id == user.id) {
         return;
       }
       await _activateUserSession(user);

@@ -281,6 +281,15 @@ class CallService extends ChangeNotifier {
     _setState(ActiveCallState.idle);
   }
 
+  Future<void> resumeForeground() async {
+    if (_currentUser == null || !_apiService.isConfigured) {
+      return;
+    }
+
+    _restartSignalPolling();
+    await _pollSignals();
+  }
+
   @override
   void dispose() {
     _disposed = true;
