@@ -16,10 +16,7 @@ TURN_PORT="${TURN_PORT:-3478}"
 TURN_MIN_PORT="${TURN_MIN_PORT:-49160}"
 TURN_MAX_PORT="${TURN_MAX_PORT:-49200}"
 INSTANCE_TYPE="${TURN_INSTANCE_TYPE:-t3.micro}"
-
-json_escape() {
-  jq -Rs . <<<"$1"
-}
+FORCE_RECREATE="${FORCE_RECREATE:-true}"
 
 ensure_security_group_rule() {
   local group_id="$1"
@@ -139,17 +136,40 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${instance_id:-}" || "$instance_id" == "None" ]]; then
+  :
+else
+  state_name="$(
+    aws ec2 describe-instances \
+      --region "$AWS_REGION" \
+      --instance-ids "$instance_id" \
+      --query 'Reservations[0].Instances[0].State.Name' \
+      --output text
+  )"
+  if [[ "$FORCE_RECREATE" == "true" && "$state_name" != "terminated" && "$state_name" != "shutting-down" ]]; then
+    aws ec2 terminate-instances \
+      --region "$AWS_REGION" \
+      --instance-ids "$instance_id" >/dev/null
+    aws ec2 wait instance-terminated \
+      --region "$AWS_REGION" \
+      --instance-ids "$instance_id"
+    instance_id=""
+  elif [[ "$state_name" == "stopped" ]]; then
+    aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$instance_id" >/dev/null
+  fi
+fi
+
+if [[ -z "${instance_id:-}" || "$instance_id" == "None" ]]; then
   ami_id="$(
     aws ec2 describe-images \
       --region "$AWS_REGION" \
-      --owners 137112412989 \
-      --filters "Name=name,Values=al2023-ami-2023.*-x86_64" "Name=state,Values=available" \
+      --owners 099720109477 \
+      --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" "Name=state,Values=available" \
       --query 'sort_by(Images,&CreationDate)[-1].ImageId' \
       --output text
   )"
 
   if [[ -z "$ami_id" || "$ami_id" == "None" ]]; then
-    echo "Failed to resolve an Amazon Linux 2023 AMI" >&2
+    echo "Failed to resolve an Ubuntu 24.04 AMI" >&2
     exit 1
   fi
 
@@ -158,11 +178,10 @@ if [[ -z "${instance_id:-}" || "$instance_id" == "None" ]]; then
 #!/bin/bash
 set -euxo pipefail
 
-dnf update -y
-dnf install -y docker curl
-systemctl enable --now docker
+export DEBIAN_FRONTEND=noninteractive
 
-mkdir -p /opt/backchat-turn
+apt-get update -y
+apt-get install -y coturn curl
 
 TOKEN=""
 for attempt in \$(seq 1 30); do
@@ -179,14 +198,15 @@ metadata() {
 }
 
 LOCAL_IP=\$(metadata local-ipv4)
-PUBLIC_IP=$(printf '%q' "$public_ip")
 
-cat >/opt/backchat-turn/turnserver.conf <<TURNCONF
+cat >/etc/turnserver.conf <<TURNCONF
 fingerprint
 lt-cred-mech
 user=$(printf '%s' "$TURN_USERNAME"):${TURN_PASSWORD}
 realm=$(printf '%s' "$REALM")
 server-name=backchat-turn
+listening-ip=\${LOCAL_IP}
+relay-ip=\${LOCAL_IP}
 listening-port=${TURN_PORT}
 min-port=${TURN_MIN_PORT}
 max-port=${TURN_MAX_PORT}
@@ -198,15 +218,19 @@ no-multicast-peers
 simple-log
 TURNCONF
 
-docker pull coturn/coturn:latest >/var/log/backchat-turn-docker-pull.log 2>&1
-docker rm -f backchat-turn >/dev/null 2>&1 || true
-docker run -d \
-  --name backchat-turn \
-  --restart unless-stopped \
-  --network host \
-  -v /opt/backchat-turn/turnserver.conf:/etc/coturn/turnserver.conf:ro \
-  coturn/coturn:latest \
-  -c /etc/coturn/turnserver.conf >/var/log/backchat-turn-docker-run.log 2>&1
+if grep -q '^#TURNSERVER_ENABLED=1' /etc/default/coturn; then
+  sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
+fi
+if grep -q '^TURNSERVER_ENABLED=' /etc/default/coturn; then
+  sed -i 's/^TURNSERVER_ENABLED=.*/TURNSERVER_ENABLED=1/' /etc/default/coturn
+else
+  echo 'TURNSERVER_ENABLED=1' >> /etc/default/coturn
+fi
+
+systemctl enable coturn
+systemctl restart coturn
+systemctl --no-pager --full status coturn || true
+ss -lntup || true
 EOF
 
   instance_id="$(
@@ -224,17 +248,6 @@ EOF
       --query 'Instances[0].InstanceId' \
       --output text
   )"
-else
-  state_name="$(
-    aws ec2 describe-instances \
-      --region "$AWS_REGION" \
-      --instance-ids "$instance_id" \
-      --query 'Reservations[0].Instances[0].State.Name' \
-      --output text
-  )"
-  if [[ "$state_name" == "stopped" ]]; then
-    aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$instance_id" >/dev/null
-  fi
 fi
 
 aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$instance_id"
@@ -253,6 +266,16 @@ read -r final_public_dns final_private_ip <<<"$(
     --query 'Reservations[0].Instances[0].[PublicDnsName,PrivateIpAddress]' \
     --output text
 )"
+
+if ! timeout 300 bash -c "until (echo >/dev/tcp/${public_ip}/${TURN_PORT}) >/dev/null 2>&1; do sleep 5; done"; then
+  aws ec2 get-console-output \
+    --region "$AWS_REGION" \
+    --instance-id "$instance_id" \
+    --query 'Output' \
+    --output text || true
+  echo "TURN relay did not open TCP port ${TURN_PORT} on ${public_ip} within 5 minutes." >&2
+  exit 1
+fi
 
 turn_urls="turn:${public_ip}:${TURN_PORT}?transport=udp,turn:${public_ip}:${TURN_PORT}?transport=tcp"
 stun_urls="stun:${public_ip}:${TURN_PORT},stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"
