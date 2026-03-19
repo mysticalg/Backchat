@@ -210,6 +210,7 @@ class ActiveCallState {
     this.callId,
     this.peer,
     this.kind = CallKind.audio,
+    this.isInitiator = false,
     this.isMuted = false,
     this.isVideoEnabled = false,
     this.hasRemoteVideo = false,
@@ -222,6 +223,7 @@ class ActiveCallState {
   final int? callId;
   final AppUser? peer;
   final CallKind kind;
+  final bool isInitiator;
   final bool isMuted;
   final bool isVideoEnabled;
   final bool hasRemoteVideo;
@@ -249,6 +251,7 @@ class ActiveCallState {
     AppUser? peer,
     bool clearPeer = false,
     CallKind? kind,
+    bool? isInitiator,
     bool? isMuted,
     bool? isVideoEnabled,
     bool? hasRemoteVideo,
@@ -262,6 +265,7 @@ class ActiveCallState {
       callId: clearCallId ? null : (callId ?? this.callId),
       peer: clearPeer ? null : (peer ?? this.peer),
       kind: kind ?? this.kind,
+      isInitiator: isInitiator ?? this.isInitiator,
       isMuted: isMuted ?? this.isMuted,
       isVideoEnabled: isVideoEnabled ?? this.isVideoEnabled,
       hasRemoteVideo: hasRemoteVideo ?? this.hasRemoteVideo,

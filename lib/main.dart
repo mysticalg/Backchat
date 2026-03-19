@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:tray_manager/tray_manager.dart';
 
@@ -47,6 +48,12 @@ class _ConversationEntry {
   final String text;
 }
 
+enum _CallAudioCueMode {
+  none,
+  incomingRinging,
+  outgoingDialing,
+}
+
 class BackchatHomePage extends StatefulWidget {
   const BackchatHomePage({super.key});
 
@@ -55,6 +62,7 @@ class BackchatHomePage extends StatefulWidget {
 }
 
 class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
+  static const double _compactChatBreakpoint = 760;
   static const Duration _messagePollInterval = Duration(seconds: 1);
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
   static const String _plainTextTransportMode = 'plaintext_v1';
@@ -92,6 +100,8 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   bool _isLoadingContacts = false;
   Timer? _messagePollTimer;
   Timer? _contactRefreshTimer;
+  Timer? _callAudioCueTimer;
+  _CallAudioCueMode _callAudioCueMode = _CallAudioCueMode.none;
 
   SecretKey? _sharedSecret;
 
@@ -108,6 +118,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   void dispose() {
     _stopMessagePolling();
     _stopContactRefresh();
+    _stopCallAudioCue();
     _callService.removeListener(_handleCallServiceChanged);
     _callService.dispose();
     _usernameController.dispose();
@@ -146,7 +157,84 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
         }
       }
     }
+    _syncCallAudioCue(callState);
     setState(() {});
+  }
+
+  bool _useCompactChatLayout(BuildContext context) {
+    return MediaQuery.sizeOf(context).width < _compactChatBreakpoint;
+  }
+
+  bool get _supportsCallAudioCue {
+    return !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  }
+
+  void _closeMobileConversation() {
+    if (_selectedContact == null) {
+      return;
+    }
+    setState(() {
+      _selectedContact = null;
+      _conversation.clear();
+    });
+  }
+
+  void _syncCallAudioCue(ActiveCallState callState) {
+    final _CallAudioCueMode nextMode = switch (callState.lifecycle) {
+      CallLifecycle.incomingRinging => _CallAudioCueMode.incomingRinging,
+      CallLifecycle.outgoingRinging => _CallAudioCueMode.outgoingDialing,
+      CallLifecycle.connecting when callState.isInitiator =>
+        _CallAudioCueMode.outgoingDialing,
+      _ => _CallAudioCueMode.none,
+    };
+
+    if (nextMode == _callAudioCueMode) {
+      return;
+    }
+
+    _stopCallAudioCue();
+    _callAudioCueMode = nextMode;
+    switch (nextMode) {
+      case _CallAudioCueMode.none:
+        return;
+      case _CallAudioCueMode.incomingRinging:
+        unawaited(_playIncomingCallCueBurst());
+        _callAudioCueTimer = Timer.periodic(
+          const Duration(seconds: 3),
+          (_) => unawaited(_playIncomingCallCueBurst()),
+        );
+        return;
+      case _CallAudioCueMode.outgoingDialing:
+        unawaited(_playOutgoingCallCueBurst());
+        _callAudioCueTimer = Timer.periodic(
+          const Duration(seconds: 2),
+          (_) => unawaited(_playOutgoingCallCueBurst()),
+        );
+        return;
+    }
+  }
+
+  void _stopCallAudioCue() {
+    _callAudioCueTimer?.cancel();
+    _callAudioCueTimer = null;
+    _callAudioCueMode = _CallAudioCueMode.none;
+  }
+
+  Future<void> _playIncomingCallCueBurst() async {
+    if (!_supportsCallAudioCue) {
+      return;
+    }
+    await SystemSound.play(SystemSoundType.alert);
+    await HapticFeedback.mediumImpact();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await SystemSound.play(SystemSoundType.alert);
+  }
+
+  Future<void> _playOutgoingCallCueBurst() async {
+    if (!_supportsCallAudioCue) {
+      return;
+    }
+    await SystemSound.play(SystemSoundType.alert);
   }
 
   Future<void> _bootstrapCrypto() async {
@@ -203,8 +291,6 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           }
         }
       }
-      selectedContact ??= contacts.isNotEmpty ? contacts.first : null;
-
       if (!mounted) {
         return;
       }
@@ -347,7 +433,7 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   Future<void> _selectContact(AppUser contact) async {
     setState(() => _selectedContact = contact);
     await _refreshConversation(scrollToBottom: true);
-    if (mounted) {
+    if (mounted && !_useCompactChatLayout(context)) {
       _messageFocusNode.requestFocus();
     }
   }
@@ -1066,10 +1152,40 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
   @override
   Widget build(BuildContext context) {
     final AppUser? user = _currentUser;
+    final bool compactLayout =
+        user != null && _useCompactChatLayout(context);
+    final bool showingMobileConversation =
+        compactLayout && _selectedContact != null;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Backchat Messenger')),
-      body: user == null ? _buildAuthView() : _buildChatView(user),
+    return PopScope<void>(
+      canPop: !showingMobileConversation,
+      onPopInvokedWithResult: (bool didPop, void _) {
+        if (!didPop && showingMobileConversation) {
+          _closeMobileConversation();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: showingMobileConversation
+              ? IconButton(
+                  onPressed: _closeMobileConversation,
+                  icon: const Icon(Icons.arrow_back),
+                )
+              : null,
+          title: showingMobileConversation
+              ? _buildMobileConversationAppBarTitle(_selectedContact!)
+              : const Text('Backchat Messenger'),
+          actions: showingMobileConversation
+              ? _buildMobileConversationAppBarActions(_selectedContact!)
+              : null,
+        ),
+        body: user == null
+            ? _buildAuthView()
+            : _buildChatView(
+                user,
+                compactLayout: compactLayout,
+              ),
+      ),
     );
   }
 
@@ -1290,7 +1406,19 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
     );
   }
 
-  Widget _buildChatView(AppUser user) {
+  Widget _buildChatView(
+    AppUser user, {
+    required bool compactLayout,
+  }) {
+    if (compactLayout) {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: _selectedContact == null
+            ? _buildCompactContactsView(user)
+            : _buildCompactConversationView(user, _selectedContact!),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.all(16),
       child: LayoutBuilder(
@@ -1326,6 +1454,374 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           );
         },
       ),
+    );
+  }
+
+  Widget _buildMobileConversationAppBarTitle(AppUser contact) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          contact.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        Text(
+          _contactStatusLabel(contact),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildMobileConversationAppBarActions(AppUser contact) {
+    final bool anotherCallIsActive = _callService.state.isInProgress &&
+        _callService.state.peer?.id != contact.id;
+    return <Widget>[
+      IconButton(
+        tooltip: 'Voice call',
+        onPressed: anotherCallIsActive ? null : () => _startCall(CallKind.audio),
+        icon: const Icon(Icons.call_outlined),
+      ),
+      IconButton(
+        tooltip: 'Video call',
+        onPressed: anotherCallIsActive ? null : () => _startCall(CallKind.video),
+        icon: const Icon(Icons.videocam_outlined),
+      ),
+    ];
+  }
+
+  Widget _buildCompactContactsView(AppUser user) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _buildCompactUserCard(user),
+        if (!_callService.state.isIdle) ...<Widget>[
+          const SizedBox(height: 12),
+          _buildCallPanel(),
+        ],
+        const SizedBox(height: 12),
+        Expanded(child: _buildContactsPane(user)),
+      ],
+    );
+  }
+
+  Widget _buildCompactConversationView(AppUser user, AppUser selectedContact) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: _buildCompactContactBanner(selectedContact),
+          ),
+          if (!_callService.state.isIdle) ...<Widget>[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _buildCallPanel(),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (_messagingService.isRemoteTransportEnabled)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                'Messages sync through AWS while history is also cached locally on this device.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          const Divider(height: 1),
+          Expanded(
+            child: _buildConversationBody(
+              user: user,
+              selectedContact: selectedContact,
+            ),
+          ),
+          _buildMessageComposer(
+            selectedContact: selectedContact,
+            compactLayout: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactUserCard(AppUser user) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                CircleAvatar(
+                  backgroundImage: user.avatarUrl.isNotEmpty
+                      ? NetworkImage(user.avatarUrl)
+                      : null,
+                  child: user.avatarUrl.isEmpty
+                      ? const Icon(Icons.person)
+                      : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        user.displayName,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      Text(
+                        user.username.isNotEmpty
+                            ? '@${user.username}'
+                            : 'Signed in',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      if (user.quote.isNotEmpty)
+                        Text(
+                          user.quote,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                OutlinedButton.icon(
+                  onPressed: _editCallSettings,
+                  icon: const Icon(Icons.settings_ethernet_outlined),
+                  label: const Text('Call settings'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _editProfile,
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('Edit profile'),
+                ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<PresenceStatus>(
+                        value: user.status,
+                        items: PresenceStatus.values
+                            .map(
+                              (PresenceStatus status) =>
+                                  DropdownMenuItem<PresenceStatus>(
+                                value: status,
+                                child: Text(status.name),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (PresenceStatus? value) {
+                          if (value != null) {
+                            _changeStatus(value);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactContactBanner(AppUser contact) {
+    final ThemeData theme = Theme.of(context);
+    return Row(
+      children: <Widget>[
+        CircleAvatar(
+          radius: 22,
+          backgroundImage:
+              contact.avatarUrl.isNotEmpty ? NetworkImage(contact.avatarUrl) : null,
+          child: contact.avatarUrl.isEmpty
+              ? Text(contact.displayName.characters.first.toUpperCase())
+              : null,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                contact.displayName,
+                style: theme.textTheme.titleMedium,
+              ),
+              if (contact.quote.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 2),
+                Text(
+                  contact.quote,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+              const SizedBox(height: 4),
+              Row(
+                children: <Widget>[
+                  _buildPresenceDot(contact.status),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _contactStatusLabel(contact),
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConversationBody({
+    required AppUser user,
+    required AppUser? selectedContact,
+  }) {
+    if (selectedContact == null) {
+      return _buildEmptyConversationState(
+        title: 'Open a conversation',
+        subtitle:
+            'Select a contact from the contact list to load previous messages and start chatting.',
+      );
+    }
+
+    if (_conversation.isEmpty) {
+      return _buildEmptyConversationState(
+        title: 'No messages yet',
+        subtitle:
+            'Your conversation history is stored locally on this device once you start chatting.',
+      );
+    }
+
+    return ListView.builder(
+      controller: _conversationScrollController,
+      padding: const EdgeInsets.all(18),
+      itemCount: _conversation.length,
+      itemBuilder: (BuildContext context, int index) {
+        return _buildMessageBubble(
+          entry: _conversation[index],
+          currentUser: user,
+        );
+      },
+    );
+  }
+
+  Widget _buildMessageComposer({
+    required AppUser? selectedContact,
+    required bool compactLayout,
+  }) {
+    final Widget emojiButton = PopupMenuButton<String>(
+      tooltip: 'Insert emoji',
+      onSelected: _appendEmoji,
+      itemBuilder: (BuildContext context) {
+        const List<String> emojis = <String>[
+          '😀',
+          '😂',
+          '😍',
+          '👍',
+          '🎉',
+          '❤️',
+          '👀',
+        ];
+        return emojis
+            .map(
+              (String emoji) => PopupMenuItem<String>(
+                value: emoji,
+                child: Text(
+                  emoji,
+                  style: const TextStyle(fontSize: 22),
+                ),
+              ),
+            )
+            .toList();
+      },
+      child: const Padding(
+        padding: EdgeInsets.all(8),
+        child: Icon(Icons.emoji_emotions_outlined),
+      ),
+    );
+
+    final Widget composerField = TextField(
+      controller: _messageController,
+      focusNode: _messageFocusNode,
+      onSubmitted: (_) => _sendMessage(),
+      minLines: 1,
+      maxLines: compactLayout ? 6 : 4,
+      decoration: InputDecoration(
+        hintText: selectedContact == null
+            ? 'Select a contact to start chatting'
+            : 'Type a message for ${selectedContact.displayName}',
+        border: const OutlineInputBorder(),
+      ),
+    );
+
+    final Widget sendButton = FilledButton.icon(
+      onPressed: selectedContact == null ? null : _sendMessage,
+      icon: const Icon(Icons.send),
+      label: const Text('Send'),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+      child: compactLayout
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                composerField,
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: <Widget>[
+                    emojiButton,
+                    const SizedBox(width: 8),
+                    sendButton,
+                  ],
+                ),
+              ],
+            )
+          : Row(
+              children: <Widget>[
+                Expanded(child: composerField),
+                const SizedBox(width: 10),
+                emojiButton,
+                const SizedBox(width: 2),
+                sendButton,
+              ],
+            ),
     );
   }
 
@@ -1534,88 +2030,14 @@ class _BackchatHomePageState extends State<BackchatHomePage> with TrayListener {
           ),
           const Divider(height: 1),
           Expanded(
-            child: selectedContact == null
-                ? _buildEmptyConversationState(
-                    title: 'Open a conversation',
-                    subtitle:
-                        'Select a contact from the right-hand pane to load previous messages and start chatting.',
-                  )
-                : _conversation.isEmpty
-                    ? _buildEmptyConversationState(
-                        title: 'No messages yet',
-                        subtitle:
-                            'Your conversation history is stored locally on this machine once you start chatting.',
-                      )
-                    : ListView.builder(
-                        controller: _conversationScrollController,
-                        padding: const EdgeInsets.all(18),
-                        itemCount: _conversation.length,
-                        itemBuilder: (BuildContext context, int index) {
-                          return _buildMessageBubble(
-                            entry: _conversation[index],
-                            currentUser: user,
-                          );
-                        },
-                      ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: TextField(
-                    controller: _messageController,
-                    focusNode: _messageFocusNode,
-                    onSubmitted: (_) => _sendMessage(),
-                    minLines: 1,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      hintText: selectedContact == null
-                          ? 'Select a contact to start chatting'
-                          : 'Type a message for ${selectedContact.displayName}',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                PopupMenuButton<String>(
-                  tooltip: 'Insert emoji',
-                  onSelected: _appendEmoji,
-                  itemBuilder: (BuildContext context) {
-                    const List<String> emojis = <String>[
-                      '😀',
-                      '😂',
-                      '😍',
-                      '👍',
-                      '🎉',
-                      '❤️',
-                      '👀',
-                    ];
-                    return emojis
-                        .map(
-                          (String emoji) => PopupMenuItem<String>(
-                            value: emoji,
-                            child: Text(
-                              emoji,
-                              style: const TextStyle(fontSize: 22),
-                            ),
-                          ),
-                        )
-                        .toList();
-                  },
-                  child: const Padding(
-                    padding: EdgeInsets.all(8),
-                    child: Icon(Icons.emoji_emotions_outlined),
-                  ),
-                ),
-                const SizedBox(width: 2),
-                FilledButton.icon(
-                  onPressed: selectedContact == null ? null : _sendMessage,
-                  icon: const Icon(Icons.send),
-                  label: const Text('Send'),
-                ),
-              ],
+            child: _buildConversationBody(
+              user: user,
+              selectedContact: selectedContact,
             ),
+          ),
+          _buildMessageComposer(
+            selectedContact: selectedContact,
+            compactLayout: false,
           ),
         ],
       ),
