@@ -58,7 +58,7 @@ jobs:
     if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     env:
-      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -97,7 +97,7 @@ jobs:
     if: ${{ inputs.build_macos }}
     runs-on: macos-latest
     env:
-      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,7 +138,7 @@ jobs:
     if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
     env:
-      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -191,7 +191,7 @@ jobs:
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
     env:
-      BACKCHAT_API_BASE_URL: ${{ secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

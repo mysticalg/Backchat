@@ -8,7 +8,7 @@ Backchat is a cross-platform encrypted messaging app scaffold targeting:
 - Android
 - iOS (optional from the same codebase)
 
-Live page: [mysticalg.github.io/Backchat](https://mysticalg.github.io/Backchat/)
+Live page: [backchatapp.co.uk](https://backchatapp.co.uk/)
 
 It includes:
 
@@ -261,16 +261,15 @@ The app can use a hosted API for shared username accounts and contact invites.
 It now defaults to:
 
 ```text
-http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
+https://d2axmspob6mqyx.cloudfront.net
 ```
 
-Desktop development can use that URL as-is. For mobile builds and production
-social login, plan to move to HTTPS later.
+Desktop and mobile builds can use that HTTPS URL as-is.
 
 Run with:
 
 ```bash
-flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://d2axmspob6mqyx.cloudfront.net
 ```
 
 Server files are in `backend/api/`.

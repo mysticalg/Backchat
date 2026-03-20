@@ -33,7 +33,7 @@ jobs:
       AWS_REGION: eu-west-2
       EB_APPLICATION_NAME: backchat
       EB_ENVIRONMENT_NAME: Backchat-env
-      BACKEND_BASE_URL: http://backchat-env.eba-2eqqcpgj.eu-west-2.elasticbeanstalk.com
+      BACKEND_BASE_URL: ${{ vars.BACKCHAT_BACKEND_BASE_URL != '' && vars.BACKCHAT_BACKEND_BASE_URL || 'https://d2axmspob6mqyx.cloudfront.net' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
