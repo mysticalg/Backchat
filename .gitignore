@@ -57,3 +57,4 @@ app.*.map.json
 /releases/
 /call-test.json
 /_site/
+/tmp/

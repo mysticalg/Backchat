@@ -14,14 +14,17 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE_DIR = ROOT / "site"
 OUTPUT_DIR = ROOT / "_site"
 REPO = os.environ.get("GITHUB_REPOSITORY", "mysticalg/Backchat")
-PAGES_URL = os.environ.get(
-    "BACKCHAT_PAGES_URL",
-    f"https://{REPO.split('/')[0]}.github.io/{REPO.split('/')[1]}/",
+SITE_URL = os.environ.get(
+    "BACKCHAT_SITE_URL",
+    os.environ.get(
+        "BACKCHAT_PAGES_URL",
+        f"https://{REPO.split('/')[0]}.github.io/{REPO.split('/')[1]}/",
+    ),
 )
 API_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
-if not PAGES_URL.endswith("/"):
-    PAGES_URL = f"{PAGES_URL}/"
+if not SITE_URL.endswith("/"):
+    SITE_URL = f"{SITE_URL}/"
 
 
 PLATFORM_CONFIG = [
@@ -201,7 +204,7 @@ def build_structured_data(release: dict) -> str:
             "Backchat is a cross-platform encrypted messenger with local chat history, "
             "presence, unread counters, and direct/VPN-friendly voice and video calling."
         ),
-        "url": PAGES_URL,
+        "url": SITE_URL,
         "downloadUrl": assets.get("Windows", {}).get("browser_download_url", release.get("html_url", "")),
         "softwareVersion": release.get("name", ""),
         "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -218,7 +221,7 @@ def render_page(release: dict) -> str:
             "A secure messenger with local chat history, unread badges, presence, "
             "and voice/video calling that prefers direct or VPN-friendly routes."
         ),
-        canonical_url=PAGES_URL,
+        canonical_url=SITE_URL,
         release_name=html.escape(release.get("name", "Latest release")),
         release_tag=html.escape(release.get("tag_name", "")),
         release_date=html.escape(format_timestamp(release.get("published_at", release.get("created_at", "")))),
@@ -518,7 +521,7 @@ def main() -> None:
                 "Read the Backchat Privacy Policy, including what data is stored on-device, "
                 "what the hosted backend retains, and how downloads are served."
             ),
-            canonical_url=f"{PAGES_URL}privacy.html",
+            canonical_url=f"{SITE_URL}privacy.html",
             article_title="Privacy Policy",
             effective_date="March 18, 2026",
             body_html=privacy_body(),
@@ -532,7 +535,7 @@ def main() -> None:
                 "Read the Backchat Terms and Conditions for downloads, hosted features, "
                 "acceptable use, and the current as-is software disclaimer."
             ),
-            canonical_url=f"{PAGES_URL}terms.html",
+            canonical_url=f"{SITE_URL}terms.html",
             article_title="Terms and Conditions",
             effective_date="March 18, 2026",
             body_html=terms_body(),
@@ -546,7 +549,7 @@ def main() -> None:
                 "Request deletion of your Backchat account and associated hosted data, "
                 "including what is deleted, what may remain temporarily, and how to contact support."
             ),
-            canonical_url=f"{PAGES_URL}delete-account.html",
+            canonical_url=f"{SITE_URL}delete-account.html",
             article_title="Account Deletion",
             effective_date="March 19, 2026",
             body_html=delete_account_body(),
@@ -555,24 +558,27 @@ def main() -> None:
     )
     (OUTPUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
     copy_static_file("styles.css")
-    copy_static_file("robots.txt")
+    (OUTPUT_DIR / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}sitemap.xml\n",
+        encoding="utf-8",
+    )
 
     sitemap = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>{html.escape(PAGES_URL)}</loc>
+    <loc>{html.escape(SITE_URL)}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
   <url>
-    <loc>{html.escape(f"{PAGES_URL}privacy.html")}</loc>
+    <loc>{html.escape(f"{SITE_URL}privacy.html")}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
   <url>
-    <loc>{html.escape(f"{PAGES_URL}terms.html")}</loc>
+    <loc>{html.escape(f"{SITE_URL}terms.html")}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
   <url>
-    <loc>{html.escape(f"{PAGES_URL}delete-account.html")}</loc>
+    <loc>{html.escape(f"{SITE_URL}delete-account.html")}</loc>
     <lastmod>{datetime.now(timezone.utc).date().isoformat()}</lastmod>
   </url>
 </urlset>
