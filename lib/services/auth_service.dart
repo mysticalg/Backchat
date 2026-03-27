@@ -303,10 +303,8 @@ class AuthService {
             user: user,
           );
         }
-        return _signInOrCreateWithUsernameLocal(
-          username: cleanedUsername,
-          recoveryEmail: cleanedRecoveryEmail,
-          password: submittedPassword,
+        return const UsernameSignInResult(
+          status: UsernameSignInStatus.serverUnavailable,
         );
       } on BackchatApiException catch (e) {
         if (e.status == 'invalid_username') {
@@ -355,16 +353,12 @@ class AuthService {
             linkedUsername: e.payload?['linkedUsername']?.toString(),
           );
         }
-        return _signInOrCreateWithUsernameLocal(
-          username: cleanedUsername,
-          recoveryEmail: cleanedRecoveryEmail,
-          password: submittedPassword,
+        return const UsernameSignInResult(
+          status: UsernameSignInStatus.serverUnavailable,
         );
       } catch (_) {
-        return _signInOrCreateWithUsernameLocal(
-          username: cleanedUsername,
-          recoveryEmail: cleanedRecoveryEmail,
-          password: submittedPassword,
+        return const UsernameSignInResult(
+          status: UsernameSignInStatus.serverUnavailable,
         );
       }
     }

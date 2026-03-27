@@ -1000,7 +1000,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           break;
         case UsernameSignInStatus.serverUnavailable:
           _showAuthMessage(
-            'Could not reach the server. Falling back to local mode.',
+            'Could not reach the server, so sign-in was not completed.',
           );
           break;
       }
