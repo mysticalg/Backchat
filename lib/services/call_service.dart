@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_user.dart';
 import '../models/call_models.dart';
@@ -12,8 +14,10 @@ class CallService extends ChangeNotifier {
   CallService({
     BackchatApiClient? apiService,
     CallSettingsService? settingsService,
+    CallSignalCursorStore? signalCursorStore,
   })  : _apiService = apiService ?? BackchatApiService(),
-        _settingsService = settingsService ?? CallSettingsService();
+        _settingsService = settingsService ?? CallSettingsService(),
+        _signalCursorStore = signalCursorStore ?? CallSignalCursorStore();
 
   static const CallServerConfig _fallbackServerConfig = CallServerConfig(
     iceServers: <CallIceServer>[
@@ -28,6 +32,7 @@ class CallService extends ChangeNotifier {
 
   final BackchatApiClient _apiService;
   final CallSettingsService _settingsService;
+  final CallSignalCursorStore _signalCursorStore;
 
   final RTCVideoRenderer localRenderer = RTCVideoRenderer();
   final RTCVideoRenderer remoteRenderer = RTCVideoRenderer();
@@ -77,9 +82,10 @@ class CallService extends ChangeNotifier {
   Future<void> activateForUser(AppUser user) async {
     await initialize();
     _currentUser = user;
-    _signalSinceId = 0;
+    _signalSinceId = await _signalCursorStore.load(user.id);
     await refreshServerConfig();
     _restartSignalPolling();
+    await _pollSignals();
   }
 
   Future<void> deactivate() async {
@@ -197,6 +203,7 @@ class CallService extends ChangeNotifier {
     await _preparePeerConnection(
       kind: activeCall.kind,
       createLocalMedia: true,
+      preservePendingRemoteCandidates: true,
     );
     await _peerConnection!.setRemoteDescription(pendingRemoteOffer);
     await _flushPendingRemoteCandidates();
@@ -334,16 +341,26 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _pollSignals() async {
-    if (_isPollingSignals || _currentUser == null || !_apiService.isConfigured) {
+    if (_isPollingSignals ||
+        _currentUser == null ||
+        !_apiService.isConfigured) {
       return;
     }
+    final AppUser pollingUser = _currentUser!;
 
     _isPollingSignals = true;
     try {
       final PollCallSignalsResult result = await _apiService.pollCallSignals(
         sinceId: _signalSinceId,
       );
+      if (_currentUser?.id != pollingUser.id) {
+        return;
+      }
+      final int previousSinceId = _signalSinceId;
       _signalSinceId = result.nextSinceId;
+      if (previousSinceId != _signalSinceId) {
+        await _signalCursorStore.save(pollingUser.id, _signalSinceId);
+      }
       for (final CallSignalEvent event in result.signals) {
         await _handleSignalEvent(event);
       }
@@ -402,6 +419,9 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingOffer(CallSignalEvent event) async {
+    if (event.call.status != 'ringing') {
+      return;
+    }
     if (_state.isInProgress && _activeCall?.id != event.callId) {
       await _apiService.sendCallSignal(
         callId: event.callId,
@@ -436,7 +456,8 @@ class CallService extends ChangeNotifier {
         kind: event.call.kind,
         isInitiator: false,
         isVideoEnabled: event.call.kind == CallKind.video,
-        statusText: 'Incoming ${event.call.kind.name} call from ${event.call.peer.displayName}',
+        statusText:
+            'Incoming ${event.call.kind.name} call from ${event.call.peer.displayName}',
         diagnostics: _buildDiagnostics(connectionState: 'ringing'),
       ),
     );
@@ -452,6 +473,9 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingAnswer(CallSignalEvent event) async {
+    if (event.call.status != 'active') {
+      return;
+    }
     if (_activeCall?.id != event.callId || _peerConnection == null) {
       return;
     }
@@ -514,17 +538,23 @@ class CallService extends ChangeNotifier {
   Future<void> _preparePeerConnection({
     required CallKind kind,
     required bool createLocalMedia,
+    bool preservePendingRemoteCandidates = false,
   }) async {
-    await _teardownPeerResources();
+    await _teardownPeerResources(
+      clearPendingRemoteCandidates: !preservePendingRemoteCandidates,
+    );
     _clearDiagnostics();
-    _pendingRemoteCandidates.clear();
+    if (!preservePendingRemoteCandidates) {
+      _pendingRemoteCandidates.clear();
+    }
     _bufferedOutboundCandidates.clear();
     _sentCandidateFingerprints.clear();
 
     final Map<String, dynamic> configuration = <String, dynamic>{
       'sdpSemantics': 'unified-plan',
-      'iceServers':
-          _filteredIceServers().map((CallIceServer server) => server.toJson()).toList(),
+      'iceServers': _filteredIceServers()
+          .map((CallIceServer server) => server.toJson())
+          .toList(),
       'iceTransportPolicy': _iceTransportPolicy,
     };
 
@@ -552,8 +582,7 @@ class CallService extends ChangeNotifier {
       }
       _setState(
         _state.copyWith(
-          hasRemoteVideo:
-              _state.hasRemoteVideo ||
+          hasRemoteVideo: _state.hasRemoteVideo ||
               (event.track.kind ?? '').toLowerCase() == 'video',
         ),
       );
@@ -566,7 +595,8 @@ class CallService extends ChangeNotifier {
             ? <String, dynamic>{'facingMode': 'user'}
             : false,
       };
-      _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      _localStream =
+          await navigator.mediaDevices.getUserMedia(mediaConstraints);
       localRenderer.srcObject = _localStream;
       for (final MediaStreamTrack track in _localStream!.getTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);
@@ -619,7 +649,8 @@ class CallService extends ChangeNotifier {
     _bufferedOutboundCandidates.clear();
   }
 
-  Future<void> _sendBufferedCandidatePayload(Map<String, dynamic> payload) async {
+  Future<void> _sendBufferedCandidatePayload(
+      Map<String, dynamic> payload) async {
     final CallSummary? activeCall = _activeCall;
     if (activeCall == null) {
       return;
@@ -662,15 +693,21 @@ class CallService extends ChangeNotifier {
     _scheduleIdleReset();
   }
 
-  Future<void> _teardownPeerResources() async {
-    _pendingRemoteCandidates.clear();
+  Future<void> _teardownPeerResources({
+    bool clearPendingRemoteCandidates = true,
+  }) async {
+    if (clearPendingRemoteCandidates) {
+      _pendingRemoteCandidates.clear();
+    }
     _bufferedOutboundCandidates.clear();
     _sentCandidateFingerprints.clear();
 
-    for (final MediaStreamTrack track in _localStream?.getTracks() ?? <MediaStreamTrack>[]) {
+    for (final MediaStreamTrack track
+        in _localStream?.getTracks() ?? <MediaStreamTrack>[]) {
       track.stop();
     }
-    for (final MediaStreamTrack track in _remoteStream?.getTracks() ?? <MediaStreamTrack>[]) {
+    for (final MediaStreamTrack track
+        in _remoteStream?.getTracks() ?? <MediaStreamTrack>[]) {
       track.stop();
     }
 
@@ -743,8 +780,9 @@ class CallService extends ChangeNotifier {
   }
 
   List<CallIceServer> _filteredIceServers() {
-    final bool allowRelayServers = _settings.connectionMode != CallConnectionMode.directOnly &&
-        _settings.connectionMode != CallConnectionMode.relayOnly
+    final bool allowRelayServers =
+        _settings.connectionMode != CallConnectionMode.directOnly &&
+                _settings.connectionMode != CallConnectionMode.relayOnly
             ? _settings.allowRelayFallback
             : _settings.connectionMode == CallConnectionMode.relayOnly;
 
@@ -756,13 +794,15 @@ class CallService extends ChangeNotifier {
       if (isTurnServer && !allowRelayServers) {
         continue;
       }
-      if (!isTurnServer && _settings.connectionMode == CallConnectionMode.relayOnly) {
+      if (!isTurnServer &&
+          _settings.connectionMode == CallConnectionMode.relayOnly) {
         continue;
       }
       servers.add(server);
     }
 
-    if (servers.isEmpty && _settings.connectionMode != CallConnectionMode.relayOnly) {
+    if (servers.isEmpty &&
+        _settings.connectionMode != CallConnectionMode.relayOnly) {
       return _fallbackServerConfig.iceServers;
     }
     return servers;
@@ -835,7 +875,8 @@ class CallService extends ChangeNotifier {
     return matchPattern.firstMatch(candidate)?.group(1);
   }
 
-  void _recordLocalCandidate(IceCandidateRouteType type, String candidateValue) {
+  void _recordLocalCandidate(
+      IceCandidateRouteType type, String candidateValue) {
     final String? address = _candidateAddressFor(candidateValue);
     if (address == null || address.isEmpty) {
       _updateDiagnostics();
@@ -933,5 +974,24 @@ class CallService extends ChangeNotifier {
       }
       unawaited(clearEndedState());
     });
+  }
+}
+
+class CallSignalCursorStore {
+  static const String _storagePrefix = 'call_signal_since_v1_';
+
+  Future<int> load(String userId) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_storageKeyForUser(userId)) ?? 0;
+  }
+
+  Future<void> save(String userId, int sinceId) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_storageKeyForUser(userId), sinceId);
+  }
+
+  String _storageKeyForUser(String userId) {
+    final String encoded = base64Url.encode(utf8.encode(userId));
+    return '$_storagePrefix$encoded';
   }
 }

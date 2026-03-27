@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
@@ -24,6 +25,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
@@ -62,6 +64,13 @@ class MainActivity : FlutterActivity() {
             UPDATE_CHANNEL_NAME,
         ).setMethodCallHandler { call, result ->
             handleUpdateMethodCall(call, result)
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            MEDIA_IMPORT_CHANNEL_NAME,
+        ).setMethodCallHandler { call, result ->
+            handleMediaImportMethodCall(call, result)
         }
     }
 
@@ -128,6 +137,13 @@ class MainActivity : FlutterActivity() {
     private fun handleUpdateMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "downloadAndInstallApk" -> startApkDownloadAndInstall(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun handleMediaImportMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "readInsertedContent" -> readInsertedContent(call, result)
             else -> result.notImplemented()
         }
     }
@@ -218,6 +234,48 @@ class MainActivity : FlutterActivity() {
 
         pendingApkDownloadId = downloadManager.enqueue(request)
         result.success("started")
+    }
+
+    private fun readInsertedContent(call: MethodCall, result: MethodChannel.Result) {
+        val rawUri = call.argument<String>("uri")?.trim().orEmpty()
+        if (rawUri.isEmpty()) {
+            result.error("missing_uri", "Inserted content URI was not provided.", null)
+            return
+        }
+
+        val uri = Uri.parse(rawUri)
+        try {
+            val bytes =
+                contentResolver.openInputStream(uri)?.use { inputStream ->
+                    val buffer = ByteArrayOutputStream()
+                    inputStream.copyTo(buffer)
+                    buffer.toByteArray()
+                }
+
+            if (bytes == null || bytes.isEmpty()) {
+                result.success(null)
+                return
+            }
+
+            result.success(
+                mapOf(
+                    "data" to bytes,
+                    "mimeType" to (contentResolver.getType(uri) ?: ""),
+                ),
+            )
+        } catch (error: SecurityException) {
+            result.error(
+                "content_permission_denied",
+                "Backchat could not access media inserted by the keyboard.",
+                error.message,
+            )
+        } catch (error: Exception) {
+            result.error(
+                "content_read_failed",
+                "Backchat could not read media inserted by the keyboard.",
+                error.message,
+            )
+        }
     }
 
     private fun showMessageNotification(call: MethodCall) {
@@ -430,6 +488,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_CHANNEL_NAME = "backchat/notifications"
         private const val UPDATE_CHANNEL_NAME = "backchat/updates"
+        private const val MEDIA_IMPORT_CHANNEL_NAME = "backchat/media_import"
         private const val MESSAGE_NOTIFICATION_CHANNEL_ID = "backchat_messages"
         private const val CALL_NOTIFICATION_CHANNEL_ID = "backchat_calls"
         private const val INCOMING_CALL_NOTIFICATION_ID = 640001

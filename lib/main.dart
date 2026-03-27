@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
@@ -23,6 +24,7 @@ import 'services/call_service.dart';
 import 'services/conversation_background_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
+import 'services/keyboard_media_service.dart';
 import 'services/messaging_service.dart';
 
 void main() {
@@ -120,6 +122,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final ConversationBackgroundService _conversationBackgroundService =
       ConversationBackgroundService();
   final CallService _callService = CallService();
+  final KeyboardMediaService _keyboardMediaService = KeyboardMediaService();
   final BackchatApiClient _profileApi = BackchatApiService();
   final FocusNode _messageFocusNode = FocusNode();
   final ScrollController _conversationScrollController = ScrollController();
@@ -164,9 +167,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _messageFocusNode.addListener(_handleMessageComposerFocusChanged);
     _callService.addListener(_handleCallServiceChanged);
     _bootstrapCrypto();
     _configureTrayIfDesktop();
+    unawaited(_appNotificationService.cancelIncomingCallNotification());
     _loadRememberedAccounts(autofillSingleAccount: true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_checkForStartupUpdate());
@@ -180,6 +185,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _stopContactRefresh();
     _stopCallAudioCue();
     WidgetsBinding.instance.removeObserver(this);
+    _messageFocusNode.removeListener(_handleMessageComposerFocusChanged);
     _callService.removeListener(_handleCallServiceChanged);
     _callService.dispose();
     _usernameController.dispose();
@@ -202,6 +208,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       if (_retryStartupUpdateOnResume) {
         unawaited(_checkForStartupUpdate(forceRetry: true));
       }
+    }
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (_messageFocusNode.hasFocus) {
+      _revealLatestMessagesForReply();
     }
   }
 
@@ -242,12 +256,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     setState(() {});
   }
 
-  bool _useCompactChatLayout(BuildContext context) {
-    return MediaQuery.sizeOf(context).width < _compactChatBreakpoint;
+  void _handleMessageComposerFocusChanged() {
+    if (_messageFocusNode.hasFocus) {
+      _revealLatestMessagesForReply();
+    }
   }
 
-  bool get _supportsCallAudioCue {
-    return !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool _useCompactChatLayout(BuildContext context) {
+    return MediaQuery.sizeOf(context).width < _compactChatBreakpoint;
   }
 
   void _closeMobileConversation() {
@@ -351,20 +367,34 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Future<void> _playIncomingCallCueBurst() async {
-    if (!_supportsCallAudioCue) {
+    if (kIsWeb) {
       return;
     }
-    await SystemSound.play(SystemSoundType.alert);
-    await HapticFeedback.mediumImpact();
+    await _playCallAlertCue();
+    if (Platform.isAndroid || Platform.isIOS) {
+      try {
+        await HapticFeedback.mediumImpact();
+      } catch (_) {
+        // Ignore unsupported haptics on the current device.
+      }
+    }
     await Future<void>.delayed(const Duration(milliseconds: 500));
-    await SystemSound.play(SystemSoundType.alert);
+    await _playCallAlertCue();
   }
 
   Future<void> _playOutgoingCallCueBurst() async {
-    if (!_supportsCallAudioCue) {
+    if (kIsWeb) {
       return;
     }
-    await SystemSound.play(SystemSoundType.alert);
+    await _playCallAlertCue();
+  }
+
+  Future<void> _playCallAlertCue() async {
+    try {
+      await SystemSound.play(SystemSoundType.alert);
+    } catch (_) {
+      // Some desktop embedders do not implement system sound playback.
+    }
   }
 
   Future<void> _bootstrapCrypto() async {
@@ -487,6 +517,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Future<void> _activateUserSession(AppUser user) async {
     _stopMessagePolling();
     _stopContactRefresh();
+    await _appNotificationService.cancelIncomingCallNotification();
     await _authService.rememberAuthenticatedUser(user);
     await _messagingService.activateForUser(user.id);
     await _callService.activateForUser(user);
@@ -823,7 +854,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     });
 
     if (scrollToBottom) {
-      _scrollConversationToBottom();
+      _ensureConversationBottomVisible(animated: false);
     }
     await _syncWindowUnreadCount();
   }
@@ -835,10 +866,24 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return directPayload;
     }
 
+    final ChatMessageContent? legacyPayload =
+        ChatMessageContent.tryFromLegacyPayload(message.cipherText);
+    if (legacyPayload != null) {
+      return legacyPayload;
+    }
+
     final String? plainText =
         _tryDecodePlainTextTransportPayload(message.cipherText);
     if (plainText != null) {
       return ChatMessageContent.text(plainText);
+    }
+
+    if (_messagingService.isRemoteTransportEnabled) {
+      final String rawText = message.cipherText.trim();
+      if (rawText.isNotEmpty) {
+        return ChatMessageContent.text(rawText);
+      }
+      return ChatMessageContent.text('[Message unavailable]');
     }
 
     if (_sharedSecret == null) {
@@ -898,19 +943,53 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return userId;
   }
 
-  void _scrollConversationToBottom() {
+  void _scrollConversationToBottom({bool animated = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_conversationScrollController.hasClients) {
         return;
       }
       final double target =
-          _conversationScrollController.position.maxScrollExtent + 80;
-      _conversationScrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+          _conversationScrollController.position.maxScrollExtent;
+      if (animated) {
+        _conversationScrollController.animateTo(
+          target + 80,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+        );
+      } else {
+        _conversationScrollController.jumpTo(target);
+      }
     });
+  }
+
+  void _revealLatestMessagesForReply() {
+    _ensureConversationBottomVisible(requireComposerFocus: true);
+  }
+
+  void _ensureConversationBottomVisible({
+    bool animated = true,
+    bool requireComposerFocus = false,
+  }) {
+    if (_selectedContact == null || _conversation.isEmpty) {
+      return;
+    }
+    _scrollConversationToBottom(animated: animated);
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 180), () {
+        if (!mounted || (requireComposerFocus && !_messageFocusNode.hasFocus)) {
+          return;
+        }
+        _scrollConversationToBottom(animated: animated);
+      }),
+    );
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 360), () {
+        if (!mounted || (requireComposerFocus && !_messageFocusNode.hasFocus)) {
+          return;
+        }
+        _scrollConversationToBottom(animated: animated);
+      }),
+    );
   }
 
   void _appendEmoji(String emoji) {
@@ -1843,6 +1922,40 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     await _sendStickerMessage(selected);
   }
 
+  Future<void> _sendKeyboardInsertedContent(
+    KeyboardInsertedContent insertedContent,
+  ) async {
+    final AppUser? selectedContact = _selectedContact;
+    if (selectedContact == null) {
+      _showAuthMessage('Select a contact before sending keyboard media.');
+      return;
+    }
+
+    try {
+      final ChatMessageContent content = await _keyboardMediaService
+          .contentFromInsertedContent(insertedContent);
+      await _sendContentMessage(content);
+    } on KeyboardMediaException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage('Could not send that GIF or image from the keyboard.');
+    }
+  }
+
+  ContentInsertionConfiguration? _composerContentInsertionConfiguration(
+    AppUser? selectedContact,
+  ) {
+    if (!Platform.isAndroid || selectedContact == null) {
+      return null;
+    }
+    return ContentInsertionConfiguration(
+      allowedMimeTypes: KeyboardMediaService.supportedMimeTypes,
+      onContentInserted: (KeyboardInsertedContent insertedContent) {
+        unawaited(_sendKeyboardInsertedContent(insertedContent));
+      },
+    );
+  }
+
   Future<void> _composeMediaMessage({
     required ChatMessageContentKind kind,
     required String title,
@@ -2738,6 +2851,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     final Widget composerField = TextField(
       controller: _messageController,
       focusNode: _messageFocusNode,
+      contentInsertionConfiguration:
+          _composerContentInsertionConfiguration(selectedContact),
       onSubmitted: (_) => _sendTextMessage(),
       minLines: 1,
       maxLines: compactLayout ? 6 : 4,
@@ -3758,37 +3873,68 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       );
     }
 
+    final bool isInlineData = _keyboardMediaService.isDataUrl(content.url);
+    final Widget mediaWidget;
+    if (isInlineData) {
+      final Uint8List? data =
+          _keyboardMediaService.tryDecodeDataUrl(content.url);
+      if (data == null) {
+        return _buildBrokenMediaPlaceholder(
+          icon: content.kind == ChatMessageContentKind.gif
+              ? Icons.gif_box_outlined
+              : Icons.broken_image_outlined,
+          title: content.kind == ChatMessageContentKind.gif
+              ? 'Could not load GIF'
+              : 'Could not load image',
+          subtitle: 'This inline media payload is invalid.',
+        );
+      }
+      mediaWidget = Image.memory(
+        data,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+      );
+    } else {
+      mediaWidget = Image.network(
+        content.url,
+        fit: BoxFit.cover,
+        errorBuilder: (
+          BuildContext context,
+          Object error,
+          StackTrace? stackTrace,
+        ) {
+          return _buildBrokenMediaPlaceholder(
+            icon: content.kind == ChatMessageContentKind.gif
+                ? Icons.gif_box_outlined
+                : Icons.broken_image_outlined,
+            title: content.kind == ChatMessageContentKind.gif
+                ? 'Could not load GIF'
+                : 'Could not load image',
+            subtitle: content.url,
+          );
+        },
+      );
+    }
+
+    final Widget clippedMedia = ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: 280,
+          maxHeight: 260,
+        ),
+        child: mediaWidget,
+      ),
+    );
+
+    if (isInlineData) {
+      return clippedMedia;
+    }
+
     return InkWell(
       borderRadius: BorderRadius.circular(14),
       onTap: () => _openExternalUrl(content.url),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(
-            maxWidth: 280,
-            maxHeight: 260,
-          ),
-          child: Image.network(
-            content.url,
-            fit: BoxFit.cover,
-            errorBuilder: (
-              BuildContext context,
-              Object error,
-              StackTrace? stackTrace,
-            ) {
-              return _buildBrokenMediaPlaceholder(
-                icon: content.kind == ChatMessageContentKind.gif
-                    ? Icons.gif_box_outlined
-                    : Icons.broken_image_outlined,
-                title: content.kind == ChatMessageContentKind.gif
-                    ? 'Could not load GIF'
-                    : 'Could not load image',
-                subtitle: content.url,
-              );
-            },
-          ),
-        ),
-      ),
+      child: clippedMedia,
     );
   }
 

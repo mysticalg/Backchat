@@ -181,4 +181,26 @@ class ChatMessageContent {
       return null;
     }
   }
+
+  static ChatMessageContent? tryFromLegacyPayload(String payload) {
+    try {
+      final Object? decoded = jsonDecode(payload);
+      if (decoded is! Map<String, dynamic>) {
+        return null;
+      }
+
+      if (decoded.containsKey('kind')) {
+        return ChatMessageContent.fromJson(decoded);
+      }
+
+      final String text =
+          decoded['text']?.toString() ?? decoded['message']?.toString() ?? '';
+      if (text.isEmpty) {
+        return null;
+      }
+      return ChatMessageContent.text(text);
+    } catch (_) {
+      return null;
+    }
+  }
 }

@@ -42,4 +42,24 @@ void main() {
       'Background: Ocean blue',
     );
   });
+
+  test('decodes legacy unwrapped content payloads', () {
+    final ChatMessageContent? decoded = ChatMessageContent.tryFromLegacyPayload(
+      '{"kind":"text","text":"hello from an older client"}',
+    );
+
+    expect(decoded, isNotNull);
+    expect(decoded!.kind, ChatMessageContentKind.text);
+    expect(decoded.text, 'hello from an older client');
+  });
+
+  test('decodes legacy plain-text json payloads', () {
+    final ChatMessageContent? decoded = ChatMessageContent.tryFromLegacyPayload(
+      '{"text":"hello from a legacy payload"}',
+    );
+
+    expect(decoded, isNotNull);
+    expect(decoded!.kind, ChatMessageContentKind.text);
+    expect(decoded.text, 'hello from a legacy payload');
+  });
 }
