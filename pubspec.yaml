@@ -1,7 +1,7 @@
 name: backchat
 description: Cross-platform encrypted messaging scaffold with OAuth identity.
 publish_to: 'none'
-version: 0.1.0+8
+version: 0.1.0+9
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -13,6 +13,8 @@ dependencies:
   cryptography: ^2.9.0
   flutter_webrtc: ^1.4.1
   http: ^1.6.0
+  in_app_update: ^4.2.5
+  package_info_plus: ^9.0.0
   shared_preferences: ^2.5.5
   tray_manager: ^0.5.2
   url_launcher: ^6.3.2

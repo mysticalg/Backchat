@@ -8,15 +8,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:tray_manager/tray_manager.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'models/app_user.dart';
 import 'models/call_models.dart';
 import 'models/chat_message.dart';
+import 'models/chat_message_content.dart';
 import 'services/auth_service.dart';
 import 'services/app_notification_service.dart';
+import 'services/app_update_service.dart';
 import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
 import 'services/call_service.dart';
+import 'services/conversation_background_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
 import 'services/messaging_service.dart';
@@ -42,11 +46,11 @@ class BackchatApp extends StatelessWidget {
 class _ConversationEntry {
   const _ConversationEntry({
     required this.message,
-    required this.text,
+    required this.content,
   });
 
   final ChatMessage message;
-  final String text;
+  final ChatMessageContent content;
 }
 
 enum _CallAudioCueMode {
@@ -59,6 +63,26 @@ enum _SessionMenuAction {
   editProfile,
   callSettings,
   signOut,
+}
+
+enum _ComposerAttachmentAction {
+  sticker,
+  gif,
+  image,
+  background,
+  video,
+  audio,
+  file,
+}
+
+class _StickerPreset {
+  const _StickerPreset({
+    required this.emoji,
+    required this.label,
+  });
+
+  final String emoji;
+  final String label;
 }
 
 class BackchatHomePage extends StatefulWidget {
@@ -74,6 +98,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   static const Duration _messagePollInterval = Duration(seconds: 1);
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
   static const String _plainTextTransportMode = 'plaintext_v1';
+  static const List<_StickerPreset> _stickerPresets = <_StickerPreset>[
+    _StickerPreset(emoji: '😀', label: 'Smile'),
+    _StickerPreset(emoji: '😂', label: 'Laugh'),
+    _StickerPreset(emoji: '😍', label: 'Love'),
+    _StickerPreset(emoji: '🎉', label: 'Celebrate'),
+    _StickerPreset(emoji: '🔥', label: 'Fire'),
+    _StickerPreset(emoji: '👍', label: 'Approve'),
+    _StickerPreset(emoji: '👀', label: 'Look'),
+    _StickerPreset(emoji: '💯', label: 'Perfect'),
+  ];
 
   final AuthService _authService = AuthService();
   final ContactsService _contactsService = ContactsService();
@@ -81,7 +115,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final MessagingService _messagingService = MessagingService();
   final AppNotificationService _appNotificationService =
       AppNotificationService();
+  final AppUpdateService _appUpdateService = AppUpdateService();
   final AppWindowService _appWindowService = AppWindowService();
+  final ConversationBackgroundService _conversationBackgroundService =
+      ConversationBackgroundService();
   final CallService _callService = CallService();
   final BackchatApiClient _profileApi = BackchatApiService();
   final FocusNode _messageFocusNode = FocusNode();
@@ -109,12 +146,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   bool _isSyncingMessages = false;
   bool _isLoadingContacts = false;
   bool _isRecoveringSession = false;
+  bool _hasCheckedStartupUpdate = false;
+  bool _isCheckingStartupUpdate = false;
+  bool _retryStartupUpdateOnResume = false;
+  bool _isShowingStartupUpdateDialog = false;
   Timer? _messagePollTimer;
   Timer? _contactRefreshTimer;
   Timer? _callAudioCueTimer;
   _CallAudioCueMode _callAudioCueMode = _CallAudioCueMode.none;
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
   ActiveCallState _lastCallState = ActiveCallState.idle;
+  String? _selectedConversationBackgroundUrl;
 
   SecretKey? _sharedSecret;
 
@@ -126,6 +168,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _bootstrapCrypto();
     _configureTrayIfDesktop();
     _loadRememberedAccounts(autofillSingleAccount: true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_checkForStartupUpdate());
+    });
     unawaited(_restoreSessionIfPossible());
   }
 
@@ -154,6 +199,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     if (state == AppLifecycleState.resumed) {
       unawaited(_appNotificationService.cancelIncomingCallNotification());
       unawaited(_handleAppResumed());
+      if (_retryStartupUpdateOnResume) {
+        unawaited(_checkForStartupUpdate(forceRetry: true));
+      }
     }
   }
 
@@ -243,6 +291,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         _currentUser = null;
         _contacts = <AppUser>[];
         _selectedContact = null;
+        _selectedConversationBackgroundUrl = null;
         _conversation.clear();
       });
 
@@ -450,6 +499,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _currentUser = user;
       _contacts = <AppUser>[];
       _selectedContact = null;
+      _selectedConversationBackgroundUrl = null;
       _conversation.clear();
     });
 
@@ -498,6 +548,96 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     await _callService.resumeForeground();
     await _loadContacts();
     await _syncMessages(showErrors: false);
+  }
+
+  Future<void> _checkForStartupUpdate({bool forceRetry = false}) async {
+    if (_isCheckingStartupUpdate) {
+      return;
+    }
+    if (_hasCheckedStartupUpdate && !forceRetry) {
+      return;
+    }
+
+    _hasCheckedStartupUpdate = true;
+    _isCheckingStartupUpdate = true;
+    try {
+      final AppUpdateCheckResult result =
+          await _appUpdateService.checkForStartupUpdate();
+      _retryStartupUpdateOnResume = result.shouldRetryOnResume;
+      if (!mounted) {
+        return;
+      }
+
+      switch (result.status) {
+        case AppUpdateStatus.autoInstallStarted:
+          if (result.message.isNotEmpty) {
+            _showAuthMessage(result.message);
+          }
+          break;
+        case AppUpdateStatus.installerPermissionRequired:
+          if (result.message.isNotEmpty) {
+            _showAuthMessage(result.message);
+          }
+          break;
+        case AppUpdateStatus.manualUpdateAvailable:
+          await _showStartupUpdateDialog(result);
+          break;
+        case AppUpdateStatus.upToDate:
+        case AppUpdateStatus.unavailable:
+          if (result.message.isNotEmpty) {
+            _showAuthMessage(result.message);
+          }
+          break;
+      }
+    } finally {
+      _isCheckingStartupUpdate = false;
+    }
+  }
+
+  Future<void> _showStartupUpdateDialog(AppUpdateCheckResult result) async {
+    if (!mounted || _isShowingStartupUpdateDialog) {
+      return;
+    }
+
+    final Uri? actionUrl = result.actionUrl;
+    if (actionUrl == null) {
+      if (result.message.isNotEmpty) {
+        _showAuthMessage(result.message);
+      }
+      return;
+    }
+
+    _isShowingStartupUpdateDialog = true;
+    try {
+      final bool? openUpdate = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext context) {
+          final String latestVersion =
+              result.latestRelease?.version ?? 'the latest release';
+          return AlertDialog(
+            title: const Text('Update available'),
+            content: Text(
+              'Backchat $latestVersion is available. This build can check for updates at startup, but this platform still needs the latest download to finish the upgrade.',
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Later'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Download update'),
+              ),
+            ],
+          );
+        },
+      );
+      if (openUpdate == true && mounted) {
+        await _openExternalUrl(actionUrl.toString());
+      }
+    } finally {
+      _isShowingStartupUpdateDialog = false;
+    }
   }
 
   void _startMessagePolling() {
@@ -555,10 +695,84 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   Future<void> _selectContact(AppUser contact) async {
     setState(() => _selectedContact = contact);
+    await _loadSelectedConversationBackground();
     await _refreshConversation(scrollToBottom: true);
     if (mounted && !_useCompactChatLayout(context)) {
       _messageFocusNode.requestFocus();
     }
+  }
+
+  Future<void> _loadSelectedConversationBackground() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
+      if (mounted) {
+        setState(() {
+          _selectedConversationBackgroundUrl = null;
+        });
+      }
+      return;
+    }
+
+    final String? backgroundUrl =
+        await _conversationBackgroundService.loadBackgroundUrl(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+    );
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+
+    setState(() {
+      _selectedConversationBackgroundUrl = backgroundUrl;
+    });
+  }
+
+  Future<void> _applyConversationBackground(String url) async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
+      return;
+    }
+
+    await _conversationBackgroundService.saveBackgroundUrl(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+      url: url,
+    );
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+    setState(() {
+      _selectedConversationBackgroundUrl = url.trim().isEmpty ? null : url;
+    });
+    _showAuthMessage('Shared background applied.');
+  }
+
+  Future<void> _clearConversationBackground() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
+      return;
+    }
+
+    await _conversationBackgroundService.clearBackgroundUrl(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+    );
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+    setState(() {
+      _selectedConversationBackgroundUrl = null;
+    });
+    _showAuthMessage('Conversation background cleared.');
   }
 
   Future<void> _refreshConversation({bool scrollToBottom = false}) async {
@@ -590,9 +804,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         <_ConversationEntry>[];
 
     for (final ChatMessage message in messages) {
-      final String text = await _decodeMessageText(message);
+      final ChatMessageContent content = await _decodeMessageContent(message);
       renderedConversation.add(
-        _ConversationEntry(message: message, text: text),
+        _ConversationEntry(message: message, content: content),
       );
     }
 
@@ -614,19 +828,25 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     await _syncWindowUnreadCount();
   }
 
-  Future<String> _decodeMessageText(ChatMessage message) async {
+  Future<ChatMessageContent> _decodeMessageContent(ChatMessage message) async {
+    final ChatMessageContent? directPayload =
+        ChatMessageContent.tryFromTransportPayload(message.cipherText);
+    if (directPayload != null) {
+      return directPayload;
+    }
+
     final String? plainText =
         _tryDecodePlainTextTransportPayload(message.cipherText);
     if (plainText != null) {
-      return plainText;
+      return ChatMessageContent.text(plainText);
     }
 
     if (_sharedSecret == null) {
-      return '[Message unavailable]';
+      return ChatMessageContent.text('[Message unavailable]');
     }
 
     try {
-      return await _encryptionService.decryptText(
+      final String decoded = await _encryptionService.decryptText(
         encodedPayload: message.cipherText,
         sharedSecret: _sharedSecret!,
         associatedData: _buildMessageAad(
@@ -634,16 +854,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           toUserId: message.toUserId,
         ),
       );
+      final ChatMessageContent? structuredPayload =
+          ChatMessageContent.tryFromTransportPayload(decoded);
+      return structuredPayload ?? ChatMessageContent.text(decoded);
     } catch (_) {
-      return '[Unable to read message]';
+      return ChatMessageContent.text('[Unable to read message]');
     }
-  }
-
-  String _encodePlainTextTransportPayload(String plainText) {
-    return jsonEncode(<String, dynamic>{
-      'mode': _plainTextTransportMode,
-      'text': plainText,
-    });
   }
 
   String? _tryDecodePlainTextTransportPayload(String payload) {
@@ -746,7 +962,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         (ChatMessage current, ChatMessage next) =>
             next.sentAt.isAfter(current.sentAt) ? next : current,
       );
-      final String preview = await _decodeMessageText(latestMessage);
+      final ChatMessageContent content =
+          await _decodeMessageContent(latestMessage);
+      final String preview = _notificationPreviewForContent(content);
       final int unreadCount = _messagingService.unreadCountForContact(
         currentUserId: currentUser.id,
         contactUserId: entry.key,
@@ -758,6 +976,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         unreadCount: unreadCount,
       );
     }
+  }
+
+  String _notificationPreviewForContent(ChatMessageContent content) {
+    final String preview = content.previewText.trim();
+    if (preview.isEmpty) {
+      return 'New message';
+    }
+    if (preview.length <= 120) {
+      return preview;
+    }
+    return '${preview.substring(0, 117)}...';
   }
 
   Future<void> _syncCallNotification({
@@ -1474,21 +1703,28 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return utf8.encode('$fromUserId|$toUserId');
   }
 
-  Future<void> _sendMessage() async {
+  Future<void> _sendTextMessage() async {
+    final String clearText = _messageController.text.trim();
+    if (clearText.isEmpty) {
+      return;
+    }
+
+    await _sendContentMessage(ChatMessageContent.text(clearText));
+    _messageController.clear();
+  }
+
+  Future<void> _sendContentMessage(ChatMessageContent content) async {
     final AppUser? currentUser = _currentUser;
     final AppUser? selectedContact = _selectedContact;
     if (currentUser == null || selectedContact == null) {
       return;
     }
 
-    final String clearText = _messageController.text.trim();
-    if (clearText.isEmpty) {
-      return;
-    }
+    final String payload = content.toTransportPayload();
 
     late final String cipherText;
     if (_messagingService.isRemoteTransportEnabled) {
-      cipherText = _encodePlainTextTransportPayload(clearText);
+      cipherText = payload;
     } else {
       if (_sharedSecret == null) {
         return;
@@ -1498,7 +1734,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         toUserId: selectedContact.id,
       );
       cipherText = await _encryptionService.encryptText(
-        plainText: clearText,
+        plainText: payload,
         sharedSecret: _sharedSecret!,
         associatedData: aad,
       );
@@ -1529,9 +1765,262 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
-    _messageController.clear();
     await _refreshConversation(scrollToBottom: true);
     await _syncMessages(showErrors: false);
+  }
+
+  Future<void> _sendStickerMessage(_StickerPreset sticker) async {
+    await _sendContentMessage(
+      ChatMessageContent.sticker(
+        emoji: sticker.emoji,
+        label: sticker.label,
+      ),
+    );
+  }
+
+  Future<void> _showStickerPicker() async {
+    final _StickerPreset? selected = await showDialog<_StickerPreset>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Send sticker'),
+          content: SizedBox(
+            width: 340,
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: _stickerPresets
+                  .map(
+                    (_StickerPreset sticker) => InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: () => Navigator.of(context).pop(sticker),
+                      child: Container(
+                        width: 92,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Text(
+                              sticker.emoji,
+                              style: const TextStyle(fontSize: 32),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              sticker.label,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (selected == null) {
+      return;
+    }
+    await _sendStickerMessage(selected);
+  }
+
+  Future<void> _composeMediaMessage({
+    required ChatMessageContentKind kind,
+    required String title,
+    required String urlHint,
+    required String captionLabel,
+  }) async {
+    final TextEditingController urlController = TextEditingController();
+    final TextEditingController captionController = TextEditingController();
+    String? validationError;
+
+    try {
+      final ChatMessageContent? result = await showDialog<ChatMessageContent>(
+        context: context,
+        builder: (BuildContext dialogContext) {
+          return StatefulBuilder(
+            builder: (BuildContext context, StateSetter setDialogState) {
+              void submit() {
+                final String rawUrl = urlController.text.trim();
+                final Uri? uri = Uri.tryParse(rawUrl);
+                final bool validUrl = uri != null &&
+                    uri.hasScheme &&
+                    (uri.scheme == 'https' || uri.scheme == 'http');
+                if (!validUrl) {
+                  setDialogState(() {
+                    validationError = 'Enter a valid http or https URL.';
+                  });
+                  return;
+                }
+
+                final String caption = captionController.text.trim();
+                final ChatMessageContent content = switch (kind) {
+                  ChatMessageContentKind.image => ChatMessageContent.image(
+                      url: rawUrl,
+                      caption: caption,
+                    ),
+                  ChatMessageContentKind.gif => ChatMessageContent.gif(
+                      url: rawUrl,
+                      caption: caption,
+                    ),
+                  ChatMessageContentKind.background =>
+                    ChatMessageContent.background(
+                      url: rawUrl,
+                      label: caption,
+                    ),
+                  ChatMessageContentKind.video => ChatMessageContent.video(
+                      url: rawUrl,
+                      caption: caption,
+                    ),
+                  ChatMessageContentKind.audio => ChatMessageContent.audio(
+                      url: rawUrl,
+                      caption: caption,
+                    ),
+                  ChatMessageContentKind.file => ChatMessageContent.file(
+                      url: rawUrl,
+                      label: caption,
+                    ),
+                  _ => ChatMessageContent.text(caption),
+                };
+                Navigator.of(dialogContext).pop(content);
+              }
+
+              return AlertDialog(
+                title: Text(title),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      TextField(
+                        controller: urlController,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: 'Media URL',
+                          hintText: urlHint,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: captionController,
+                        decoration: InputDecoration(
+                          labelText: captionLabel,
+                          hintText: 'Optional',
+                        ),
+                      ),
+                      if (validationError != null) ...<Widget>[
+                        const SizedBox(height: 10),
+                        Text(
+                          validationError!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: submit,
+                    child: const Text('Send'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+
+      if (result == null) {
+        return;
+      }
+      await _sendContentMessage(result);
+    } finally {
+      urlController.dispose();
+      captionController.dispose();
+    }
+  }
+
+  Future<void> _handleAttachmentAction(
+    _ComposerAttachmentAction action,
+  ) async {
+    switch (action) {
+      case _ComposerAttachmentAction.sticker:
+        await _showStickerPicker();
+        return;
+      case _ComposerAttachmentAction.gif:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.gif,
+          title: 'Send GIF',
+          urlHint: 'https://media.example.com/fun.gif',
+          captionLabel: 'Caption',
+        );
+        return;
+      case _ComposerAttachmentAction.image:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.image,
+          title: 'Send image',
+          urlHint: 'https://example.com/photo.jpg',
+          captionLabel: 'Caption',
+        );
+        return;
+      case _ComposerAttachmentAction.background:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.background,
+          title: 'Share background',
+          urlHint: 'https://example.com/wallpaper.jpg',
+          captionLabel: 'Background name',
+        );
+        return;
+      case _ComposerAttachmentAction.video:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.video,
+          title: 'Send video',
+          urlHint: 'https://example.com/video.mp4',
+          captionLabel: 'Caption',
+        );
+        return;
+      case _ComposerAttachmentAction.audio:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.audio,
+          title: 'Send audio',
+          urlHint: 'https://example.com/audio.mp3',
+          captionLabel: 'Caption',
+        );
+        return;
+      case _ComposerAttachmentAction.file:
+        await _composeMediaMessage(
+          kind: ChatMessageContentKind.file,
+          title: 'Send file link',
+          urlHint: 'https://example.com/document.pdf',
+          captionLabel: 'File label',
+        );
+        return;
+    }
   }
 
   @override
@@ -2100,6 +2589,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             ],
           ),
         ),
+        if (_selectedConversationBackgroundUrl != null) ...<Widget>[
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Clear conversation background',
+            onPressed: _clearConversationBackground,
+            icon: const Icon(Icons.wallpaper_outlined),
+          ),
+        ],
       ],
     );
   }
@@ -2108,23 +2605,26 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     required AppUser user,
     required AppUser? selectedContact,
   }) {
+    final Widget content;
     if (selectedContact == null) {
-      return _buildEmptyConversationState(
+      content = _buildEmptyConversationState(
         title: 'Open a conversation',
         subtitle:
             'Select a contact from the contact list to load previous messages and start chatting.',
       );
+      return content;
     }
 
     if (_conversation.isEmpty) {
-      return _buildEmptyConversationState(
+      content = _buildEmptyConversationState(
         title: 'No messages yet',
         subtitle:
             'Your conversation history is stored locally on this device once you start chatting.',
       );
+      return _buildConversationCanvas(content);
     }
 
-    return ListView.builder(
+    content = ListView.builder(
       controller: _conversationScrollController,
       padding: const EdgeInsets.all(18),
       itemCount: _conversation.length,
@@ -2135,6 +2635,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         );
       },
     );
+    return _buildConversationCanvas(content);
   }
 
   Widget _buildMessageComposer({
@@ -2172,10 +2673,72 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       ),
     );
 
+    final Widget attachmentButton = PopupMenuButton<_ComposerAttachmentAction>(
+      tooltip: 'Send media',
+      enabled: selectedContact != null,
+      onSelected: _handleAttachmentAction,
+      itemBuilder: (BuildContext context) =>
+          const <PopupMenuEntry<_ComposerAttachmentAction>>[
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.sticker,
+          child: ListTile(
+            leading: Icon(Icons.emoji_emotions),
+            title: Text('Sticker'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.gif,
+          child: ListTile(
+            leading: Icon(Icons.gif_box_outlined),
+            title: Text('GIF'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.image,
+          child: ListTile(
+            leading: Icon(Icons.image_outlined),
+            title: Text('Image'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.background,
+          child: ListTile(
+            leading: Icon(Icons.wallpaper_outlined),
+            title: Text('Background'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.video,
+          child: ListTile(
+            leading: Icon(Icons.videocam_outlined),
+            title: Text('Video'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.audio,
+          child: ListTile(
+            leading: Icon(Icons.audiotrack_outlined),
+            title: Text('Audio'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.file,
+          child: ListTile(
+            leading: Icon(Icons.attach_file),
+            title: Text('File link'),
+          ),
+        ),
+      ],
+      child: const Padding(
+        padding: EdgeInsets.all(8),
+        child: Icon(Icons.add_circle_outline),
+      ),
+    );
+
     final Widget composerField = TextField(
       controller: _messageController,
       focusNode: _messageFocusNode,
-      onSubmitted: (_) => _sendMessage(),
+      onSubmitted: (_) => _sendTextMessage(),
       minLines: 1,
       maxLines: compactLayout ? 6 : 4,
       decoration: InputDecoration(
@@ -2187,7 +2750,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     );
 
     final Widget sendButton = FilledButton.icon(
-      onPressed: selectedContact == null ? null : _sendMessage,
+      onPressed: selectedContact == null ? null : _sendTextMessage,
       icon: const Icon(Icons.send),
       label: const Text('Send'),
     );
@@ -2203,6 +2766,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: <Widget>[
+                    attachmentButton,
+                    const SizedBox(width: 8),
                     emojiButton,
                     const SizedBox(width: 8),
                     sendButton,
@@ -2214,6 +2779,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               children: <Widget>[
                 Expanded(child: composerField),
                 const SizedBox(width: 10),
+                attachmentButton,
+                const SizedBox(width: 2),
                 emojiButton,
                 const SizedBox(width: 2),
                 sendButton,
@@ -2384,6 +2951,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                               const SizedBox(width: 8),
                               Column(
                                 children: <Widget>[
+                                  if (_selectedConversationBackgroundUrl !=
+                                      null) ...<Widget>[
+                                    IconButton.filledTonal(
+                                      tooltip: 'Clear conversation background',
+                                      onPressed: _clearConversationBackground,
+                                      icon: const Icon(
+                                        Icons.wallpaper_outlined,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                  ],
                                   IconButton.filledTonal(
                                     tooltip: 'Start voice call',
                                     onPressed:
@@ -2438,6 +3016,42 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildConversationCanvas(Widget child) {
+    final String? backgroundUrl = _selectedConversationBackgroundUrl;
+    if (backgroundUrl == null || backgroundUrl.trim().isEmpty) {
+      return child;
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        Positioned.fill(
+          child: Image.network(
+            backgroundUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (
+              BuildContext context,
+              Object error,
+              StackTrace? stackTrace,
+            ) {
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface.withValues(
+                    alpha: 0.78,
+                  ),
+            ),
+          ),
+        ),
+        child,
+      ],
     );
   }
 
@@ -3031,7 +3645,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 child: Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  child: Text(entry.text),
+                  child: _buildMessageContent(
+                    entry.content,
+                    isMine: isMine,
+                  ),
                 ),
               ),
               const SizedBox(height: 4),
@@ -3044,6 +3661,254 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         ),
       ),
     );
+  }
+
+  Widget _buildMessageContent(
+    ChatMessageContent content, {
+    required bool isMine,
+  }) {
+    return switch (content.kind) {
+      ChatMessageContentKind.text => SelectableText(content.text),
+      ChatMessageContentKind.sticker => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              content.text,
+              style: const TextStyle(fontSize: 46, height: 1.0),
+            ),
+            if (content.hasLabel) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(content.label),
+            ],
+          ],
+        ),
+      ChatMessageContentKind.background => _buildBackgroundShareCard(content),
+      ChatMessageContentKind.image || ChatMessageContentKind.gif => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _buildVisualMedia(content),
+            if (content.hasText) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(content.text),
+            ],
+          ],
+        ),
+      ChatMessageContentKind.video ||
+      ChatMessageContentKind.audio ||
+      ChatMessageContentKind.file =>
+        _buildLinkedMediaCard(content, isMine: isMine),
+    };
+  }
+
+  Widget _buildBackgroundShareCard(ChatMessageContent content) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _buildVisualMedia(content),
+        const SizedBox(height: 8),
+        Text(
+          content.hasLabel ? content.label : 'Shared background',
+          style: theme.textTheme.titleSmall,
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            FilledButton.tonalIcon(
+              onPressed: content.hasUrl
+                  ? () => _applyConversationBackground(content.url)
+                  : null,
+              icon: const Icon(Icons.wallpaper_outlined),
+              label: const Text('Apply'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed:
+                  content.hasUrl ? () => _openExternalUrl(content.url) : null,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Open'),
+            ),
+          ],
+        ),
+        if (content.hasUrl) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            content.url,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildVisualMedia(ChatMessageContent content) {
+    if (!content.hasUrl) {
+      return _buildBrokenMediaPlaceholder(
+        icon: content.kind == ChatMessageContentKind.gif
+            ? Icons.gif_box_outlined
+            : Icons.broken_image_outlined,
+        title: 'Missing media link',
+        subtitle: 'This message does not contain a valid URL.',
+      );
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => _openExternalUrl(content.url),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(
+            maxWidth: 280,
+            maxHeight: 260,
+          ),
+          child: Image.network(
+            content.url,
+            fit: BoxFit.cover,
+            errorBuilder: (
+              BuildContext context,
+              Object error,
+              StackTrace? stackTrace,
+            ) {
+              return _buildBrokenMediaPlaceholder(
+                icon: content.kind == ChatMessageContentKind.gif
+                    ? Icons.gif_box_outlined
+                    : Icons.broken_image_outlined,
+                title: content.kind == ChatMessageContentKind.gif
+                    ? 'Could not load GIF'
+                    : 'Could not load image',
+                subtitle: content.url,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLinkedMediaCard(
+    ChatMessageContent content, {
+    required bool isMine,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final (IconData, String) meta = switch (content.kind) {
+      ChatMessageContentKind.video => (Icons.play_circle_outline, 'Video'),
+      ChatMessageContentKind.audio => (Icons.audiotrack_outlined, 'Audio'),
+      ChatMessageContentKind.file => (Icons.insert_drive_file_outlined, 'File'),
+      _ => (Icons.link_outlined, 'Media'),
+    };
+    final String headline = content.hasLabel
+        ? content.label
+        : (content.hasText ? content.text : meta.$2);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => _openExternalUrl(content.url),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 280),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface.withValues(
+            alpha: isMine ? 0.4 : 0.8,
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
+        ),
+        child: Row(
+          children: <Widget>[
+            Icon(meta.$1),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    headline,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    meta.$2,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  if (content.url.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 4),
+                    Text(
+                      content.url,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.open_in_new),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBrokenMediaPlaceholder({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Container(
+      width: 260,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 34),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            style: theme.textTheme.titleSmall,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall,
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openExternalUrl(String rawUrl) async {
+    final Uri? uri = Uri.tryParse(rawUrl.trim());
+    if (uri == null || !uri.hasScheme) {
+      _showAuthMessage('This media link is not valid.');
+      return;
+    }
+
+    final bool launched = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && mounted) {
+      _showAuthMessage('Could not open that media link.');
+    }
   }
 
   Widget _buildEmptyConversationState({

@@ -1,15 +1,21 @@
 package com.mysticalg.backchat
 
 import android.Manifest
+import android.app.DownloadManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -21,6 +27,24 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
+    private var pendingApkDownloadId: Long? = null
+    private val apkDownloadReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
+                    return
+                }
+
+                val completedDownloadId =
+                    intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+                if (completedDownloadId == -1L || completedDownloadId != pendingApkDownloadId) {
+                    return
+                }
+
+                handleCompletedApkDownload(completedDownloadId)
+            }
+        }
+    private var apkDownloadReceiverRegistered = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -32,6 +56,21 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             handleNotificationMethodCall(call, result)
         }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            UPDATE_CHANNEL_NAME,
+        ).setMethodCallHandler { call, result ->
+            handleUpdateMethodCall(call, result)
+        }
+    }
+
+    override fun onDestroy() {
+        if (apkDownloadReceiverRegistered) {
+            unregisterReceiver(apkDownloadReceiver)
+            apkDownloadReceiverRegistered = false
+        }
+        super.onDestroy()
     }
 
     override fun onRequestPermissionsResult(
@@ -86,6 +125,13 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun handleUpdateMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "downloadAndInstallApk" -> startApkDownloadAndInstall(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
     private fun requestNotificationPermission(result: MethodChannel.Result) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             result.success(true)
@@ -112,6 +158,66 @@ class MainActivity : FlutterActivity() {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             NOTIFICATION_PERMISSION_REQUEST_CODE,
         )
+    }
+
+    private fun startApkDownloadAndInstall(call: MethodCall, result: MethodChannel.Result) {
+        val rawUrl = call.argument<String>("url")?.trim().orEmpty()
+        val versionLabel = call.argument<String>("versionLabel")?.trim().orEmpty()
+        if (rawUrl.isEmpty()) {
+            result.error("missing_url", "APK download URL was not provided.", null)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            val permissionIntent =
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    android.net.Uri.parse("package:$packageName"),
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            startActivity(permissionIntent)
+            result.success("permission_required")
+            return
+        }
+
+        val downloadManager = getSystemService(DownloadManager::class.java)
+        if (downloadManager == null) {
+            result.error(
+                "download_manager_unavailable",
+                "Android DownloadManager is unavailable on this device.",
+                null,
+            )
+            return
+        }
+
+        ensureApkDownloadReceiverRegistered()
+
+        val request =
+            DownloadManager.Request(android.net.Uri.parse(rawUrl))
+                .setTitle("${appDisplayName()} update")
+                .setDescription(
+                    if (versionLabel.isEmpty()) {
+                        "Downloading the latest Backchat update."
+                    } else {
+                        "Downloading Backchat $versionLabel."
+                    },
+                )
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                .setMimeType(APK_MIME_TYPE)
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(true)
+
+        request.setDestinationInExternalFilesDir(
+            this,
+            Environment.DIRECTORY_DOWNLOADS,
+            "backchat-update.apk",
+        )
+
+        pendingApkDownloadId = downloadManager.enqueue(request)
+        result.success("started")
     }
 
     private fun showMessageNotification(call: MethodCall) {
@@ -195,6 +301,56 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun ensureApkDownloadReceiverRegistered() {
+        if (apkDownloadReceiverRegistered) {
+            return
+        }
+
+        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(apkDownloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(apkDownloadReceiver, filter)
+        }
+        apkDownloadReceiverRegistered = true
+    }
+
+    private fun handleCompletedApkDownload(downloadId: Long) {
+        val downloadManager = getSystemService(DownloadManager::class.java) ?: return
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        downloadManager.query(query)?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                pendingApkDownloadId = null
+                return
+            }
+
+            val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+            if (statusIndex == -1) {
+                pendingApkDownloadId = null
+                return
+            }
+
+            val status = cursor.getInt(statusIndex)
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                val downloadUri = downloadManager.getUriForDownloadedFile(downloadId)
+                if (downloadUri != null) {
+                    promptApkInstall(downloadUri)
+                }
+            }
+        }
+        pendingApkDownloadId = null
+    }
+
+    private fun promptApkInstall(downloadUri: android.net.Uri) {
+        val installIntent =
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(downloadUri, APK_MIME_TYPE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        startActivity(installIntent)
+    }
+
     private fun notificationsAllowed(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(
@@ -273,9 +429,11 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val NOTIFICATION_CHANNEL_NAME = "backchat/notifications"
+        private const val UPDATE_CHANNEL_NAME = "backchat/updates"
         private const val MESSAGE_NOTIFICATION_CHANNEL_ID = "backchat_messages"
         private const val CALL_NOTIFICATION_CHANNEL_ID = "backchat_calls"
         private const val INCOMING_CALL_NOTIFICATION_ID = 640001
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 640002
+        private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     }
 }
