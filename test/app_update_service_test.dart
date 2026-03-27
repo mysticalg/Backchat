@@ -75,7 +75,7 @@ void main() {
     );
   });
 
-  test('starts APK install for newer sideloaded Android releases', () async {
+  test('offers auto install for newer sideloaded Android releases', () async {
     Uri? requestedUrl;
     String? requestedVersion;
     final AppUpdateService service = AppUpdateService(
@@ -93,6 +93,33 @@ void main() {
     );
 
     final AppUpdateCheckResult result = await service.checkForStartupUpdate();
+
+    expect(result.status, AppUpdateStatus.manualUpdateAvailable);
+    expect(result.canAutoInstall, isTrue);
+    expect(requestedVersion, isNull);
+    expect(requestedUrl, isNull);
+  });
+
+  test('starts APK install after the user accepts the update', () async {
+    Uri? requestedUrl;
+    String? requestedVersion;
+    final AppUpdateService service = AppUpdateService(
+      packageInfoLoader: () async => packageInfo(),
+      latestReleaseFetcher: () async => latestRelease(),
+      platform: AppUpdatePlatform.android,
+      androidApkInstaller: ({
+        required Uri downloadUrl,
+        required String versionLabel,
+      }) async {
+        requestedUrl = downloadUrl;
+        requestedVersion = versionLabel;
+        return AndroidApkInstallStatus.started;
+      },
+    );
+
+    final AppUpdateCheckResult result = await service.checkForStartupUpdate(
+      startInstall: true,
+    );
 
     expect(result.status, AppUpdateStatus.autoInstallStarted);
     expect(requestedVersion, '0.1.0+9');
@@ -115,7 +142,9 @@ void main() {
       },
     );
 
-    final AppUpdateCheckResult result = await service.checkForStartupUpdate();
+    final AppUpdateCheckResult result = await service.checkForStartupUpdate(
+      startInstall: true,
+    );
 
     expect(result.status, AppUpdateStatus.installerPermissionRequired);
     expect(result.shouldRetryOnResume, isTrue);
@@ -151,8 +180,39 @@ void main() {
 
     final AppUpdateCheckResult result = await service.checkForStartupUpdate();
 
-    expect(result.status, AppUpdateStatus.autoInstallStarted);
+    expect(result.status, AppUpdateStatus.manualUpdateAvailable);
+    expect(result.canAutoInstall, isTrue);
     expect(releaseFetchCalled, isFalse);
+  });
+
+  test('starts Google Play immediate updates after the user accepts', () async {
+    final AppUpdateService service = AppUpdateService(
+      packageInfoLoader: () async =>
+          packageInfo(installerStore: 'com.android.vending'),
+      latestReleaseFetcher: () async => latestRelease(),
+      playUpdateInfoLoader: () async {
+        return play_update.AppUpdateInfo(
+          updateAvailability: play_update.UpdateAvailability.updateAvailable,
+          immediateUpdateAllowed: true,
+          immediateAllowedPreconditions: const <int>[],
+          flexibleUpdateAllowed: false,
+          flexibleAllowedPreconditions: const <int>[],
+          availableVersionCode: 9,
+          installStatus: play_update.InstallStatus.pending,
+          packageName: 'com.mysticalg.backchat',
+          clientVersionStalenessDays: 2,
+          updatePriority: 5,
+        );
+      },
+      playImmediateUpdater: () async => play_update.AppUpdateResult.success,
+      platform: AppUpdatePlatform.android,
+    );
+
+    final AppUpdateCheckResult result = await service.checkForStartupUpdate(
+      startInstall: true,
+    );
+
+    expect(result.status, AppUpdateStatus.autoInstallStarted);
   });
 
   test('parses release versions from build tags when the release name is blank',

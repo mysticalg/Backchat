@@ -48,6 +48,7 @@ class AppUpdateCheckResult {
     required this.currentVersion,
     this.latestRelease,
     this.message = '',
+    this.canAutoInstall = false,
     this.shouldRetryOnResume = false,
   });
 
@@ -55,6 +56,7 @@ class AppUpdateCheckResult {
   final String currentVersion;
   final AppReleaseInfo? latestRelease;
   final String message;
+  final bool canAutoInstall;
   final bool shouldRetryOnResume;
 
   Uri? get actionUrl => latestRelease?.downloadUrl ?? latestRelease?.releaseUrl;
@@ -99,13 +101,18 @@ class AppUpdateService {
   final AndroidApkInstaller _androidApkInstaller;
   final AppUpdatePlatform _platform;
 
-  Future<AppUpdateCheckResult> checkForStartupUpdate() async {
+  Future<AppUpdateCheckResult> checkForStartupUpdate({
+    bool startInstall = false,
+  }) async {
     final PackageInfo packageInfo = await _packageInfoLoader();
     final String currentVersion = _installedVersion(packageInfo);
 
     if (_platform == AppUpdatePlatform.android &&
         _isPlayManagedInstall(packageInfo.installerStore)) {
-      return _checkPlayManagedAndroidUpdate(currentVersion);
+      return _checkPlayManagedAndroidUpdate(
+        currentVersion,
+        startInstall: startInstall,
+      );
     }
 
     final Map<String, dynamic>? release = await _latestReleaseFetcher();
@@ -132,8 +139,9 @@ class AppUpdateService {
       );
     }
 
-    if (_platform == AppUpdatePlatform.android &&
-        latestRelease.downloadUrl != null) {
+    final bool canAutoInstall = _platform == AppUpdatePlatform.android &&
+        latestRelease.downloadUrl != null;
+    if (startInstall && canAutoInstall) {
       final AndroidApkInstallStatus installStatus = await _androidApkInstaller(
         downloadUrl: latestRelease.downloadUrl!,
         versionLabel: latestRelease.version,
@@ -164,12 +172,14 @@ class AppUpdateService {
       currentVersion: currentVersion,
       latestRelease: latestRelease,
       message: 'Backchat ${latestRelease.version} is available.',
+      canAutoInstall: canAutoInstall,
     );
   }
 
   Future<AppUpdateCheckResult> _checkPlayManagedAndroidUpdate(
-    String currentVersion,
-  ) async {
+    String currentVersion, {
+    required bool startInstall,
+  }) async {
     try {
       final play_update.AppUpdateInfo updateInfo =
           await _playUpdateInfoLoader();
@@ -183,6 +193,15 @@ class AppUpdateService {
         return AppUpdateCheckResult(
           status: AppUpdateStatus.upToDate,
           currentVersion: currentVersion,
+        );
+      }
+
+      if (!startInstall) {
+        return AppUpdateCheckResult(
+          status: AppUpdateStatus.manualUpdateAvailable,
+          currentVersion: currentVersion,
+          message: 'A Backchat update is available.',
+          canAutoInstall: true,
         );
       }
 

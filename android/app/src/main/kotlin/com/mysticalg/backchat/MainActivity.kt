@@ -112,6 +112,11 @@ class MainActivity : FlutterActivity() {
                 result.success(null)
             }
 
+            "showUpdateAvailableNotification" -> {
+                showUpdateAvailableNotification(call)
+                result.success(null)
+            }
+
             "cancelNotification" -> {
                 val notificationId = call.argument<Number>("id")?.toInt()
                 if (notificationId != null) {
@@ -122,6 +127,11 @@ class MainActivity : FlutterActivity() {
 
             "cancelIncomingCallNotification" -> {
                 NotificationManagerCompat.from(this).cancel(INCOMING_CALL_NOTIFICATION_ID)
+                result.success(null)
+            }
+
+            "cancelUpdateNotification" -> {
+                NotificationManagerCompat.from(this).cancel(UPDATE_NOTIFICATION_ID)
                 result.success(null)
             }
 
@@ -359,6 +369,41 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun showUpdateAvailableNotification(call: MethodCall) {
+        if (!notificationsAllowed()) {
+            return
+        }
+
+        val title = call.argument<String>("title")?.trim().orEmpty()
+        val body = call.argument<String>("body")?.trim().orEmpty()
+        val pendingIntent = buildLaunchPendingIntent(UPDATE_NOTIFICATION_ID)
+        val builder =
+            NotificationCompat.Builder(this, UPDATE_NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title.ifEmpty { "${appDisplayName()} update available" })
+                .setContentText(body.ifEmpty { "A newer Backchat release is ready." })
+                .setStyle(
+                    NotificationCompat.BigTextStyle().bigText(
+                        body.ifEmpty { "A newer Backchat release is ready." },
+                    ),
+                )
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+
+        if (pendingIntent != null) {
+            builder.setContentIntent(pendingIntent)
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+        }
+
+        NotificationManagerCompat.from(this).notify(UPDATE_NOTIFICATION_ID, builder.build())
+    }
+
     private fun ensureApkDownloadReceiverRegistered() {
         if (apkDownloadReceiverRegistered) {
             return
@@ -475,8 +520,24 @@ class MainActivity : FlutterActivity() {
                 )
             }
 
+        val updateChannel =
+            NotificationChannel(
+                UPDATE_NOTIFICATION_CHANNEL_ID,
+                "Updates",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Alerts when a newer Backchat build is available."
+                enableVibration(true)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                setSound(
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+                    messageAudioAttributes,
+                )
+            }
+
         manager.createNotificationChannel(messageChannel)
         manager.createNotificationChannel(callChannel)
+        manager.createNotificationChannel(updateChannel)
     }
 
     private fun appDisplayName(): String {
@@ -491,7 +552,9 @@ class MainActivity : FlutterActivity() {
         private const val MEDIA_IMPORT_CHANNEL_NAME = "backchat/media_import"
         private const val MESSAGE_NOTIFICATION_CHANNEL_ID = "backchat_messages"
         private const val CALL_NOTIFICATION_CHANNEL_ID = "backchat_calls"
+        private const val UPDATE_NOTIFICATION_CHANNEL_ID = "backchat_updates"
         private const val INCOMING_CALL_NOTIFICATION_ID = 640001
+        private const val UPDATE_NOTIFICATION_ID = 640003
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 640002
         private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     }

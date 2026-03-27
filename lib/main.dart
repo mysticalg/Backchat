@@ -99,6 +99,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   static const double _compactChatBreakpoint = 760;
   static const Duration _messagePollInterval = Duration(seconds: 1);
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
+  static const Duration _updateCheckInterval = Duration(minutes: 30);
   static const String _plainTextTransportMode = 'plaintext_v1';
   static const List<_StickerPreset> _stickerPresets = <_StickerPreset>[
     _StickerPreset(emoji: '😀', label: 'Smile'),
@@ -155,11 +156,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   bool _isShowingStartupUpdateDialog = false;
   Timer? _messagePollTimer;
   Timer? _contactRefreshTimer;
+  Timer? _updateCheckTimer;
   Timer? _callAudioCueTimer;
   _CallAudioCueMode _callAudioCueMode = _CallAudioCueMode.none;
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
   ActiveCallState _lastCallState = ActiveCallState.idle;
   String? _selectedConversationBackgroundUrl;
+  DateTime? _lastUpdateCheckAt;
+  AppUpdateCheckResult? _availableUpdate;
+  String? _notifiedUpdateKey;
+  String? _shownUpdateDialogKey;
 
   SecretKey? _sharedSecret;
 
@@ -172,9 +178,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _bootstrapCrypto();
     _configureTrayIfDesktop();
     unawaited(_appNotificationService.cancelIncomingCallNotification());
+    unawaited(_appNotificationService.cancelUpdateNotification());
     _loadRememberedAccounts(autofillSingleAccount: true);
+    _startUpdatePolling();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_checkForStartupUpdate());
+      unawaited(_checkForStartupUpdate(startupOnly: true));
     });
     unawaited(_restoreSessionIfPossible());
   }
@@ -183,6 +191,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   void dispose() {
     _stopMessagePolling();
     _stopContactRefresh();
+    _stopUpdatePolling();
     _stopCallAudioCue();
     WidgetsBinding.instance.removeObserver(this);
     _messageFocusNode.removeListener(_handleMessageComposerFocusChanged);
@@ -203,11 +212,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appLifecycleState = state;
     if (state == AppLifecycleState.resumed) {
+      _shownUpdateDialogKey = null;
       unawaited(_appNotificationService.cancelIncomingCallNotification());
       unawaited(_handleAppResumed());
       if (_retryStartupUpdateOnResume) {
-        unawaited(_checkForStartupUpdate(forceRetry: true));
+        unawaited(_attemptSelectedUpdate());
+      } else if (_availableUpdate != null) {
+        unawaited(_announceAvailableUpdate(_availableUpdate!));
+      } else {
+        unawaited(_checkForStartupUpdate());
       }
+    } else {
+      _shownUpdateDialogKey = null;
     }
   }
 
@@ -581,19 +597,103 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     await _syncMessages(showErrors: false);
   }
 
-  Future<void> _checkForStartupUpdate({bool forceRetry = false}) async {
+  Future<void> _checkForStartupUpdate({
+    bool startupOnly = false,
+    bool forceRetry = false,
+  }) async {
     if (_isCheckingStartupUpdate) {
       return;
     }
-    if (_hasCheckedStartupUpdate && !forceRetry) {
+    if (startupOnly && _hasCheckedStartupUpdate && !forceRetry) {
+      return;
+    }
+    if (!forceRetry && !startupOnly && !_shouldRunUpdateCheckNow()) {
       return;
     }
 
-    _hasCheckedStartupUpdate = true;
+    if (startupOnly) {
+      _hasCheckedStartupUpdate = true;
+    }
+    _isCheckingStartupUpdate = true;
+    _lastUpdateCheckAt = DateTime.now();
+    try {
+      final AppUpdateCheckResult result =
+          await _appUpdateService.checkForStartupUpdate(startInstall: false);
+      if (!mounted) {
+        return;
+      }
+
+      switch (result.status) {
+        case AppUpdateStatus.manualUpdateAvailable:
+          _availableUpdate = result;
+          await _announceAvailableUpdate(result);
+          break;
+        case AppUpdateStatus.upToDate:
+          _availableUpdate = null;
+          _notifiedUpdateKey = null;
+          await _appNotificationService.cancelUpdateNotification();
+          break;
+        case AppUpdateStatus.unavailable:
+          _availableUpdate = null;
+          break;
+        case AppUpdateStatus.autoInstallStarted:
+        case AppUpdateStatus.installerPermissionRequired:
+          break;
+      }
+    } finally {
+      _isCheckingStartupUpdate = false;
+    }
+  }
+
+  bool _shouldRunUpdateCheckNow() {
+    final DateTime? lastCheckAt = _lastUpdateCheckAt;
+    if (lastCheckAt == null) {
+      return true;
+    }
+    return DateTime.now().difference(lastCheckAt) >= _updateCheckInterval;
+  }
+
+  String _updateAnnouncementKey(AppUpdateCheckResult result) {
+    final String version = result.latestRelease?.version.trim() ?? '';
+    if (version.isNotEmpty) {
+      return version;
+    }
+    return 'auto:${result.currentVersion}';
+  }
+
+  String _updateVersionLabel(AppUpdateCheckResult result) {
+    return result.latestRelease?.version.trim() ?? '';
+  }
+
+  Future<void> _announceAvailableUpdate(AppUpdateCheckResult result) async {
+    _availableUpdate = result;
+    final String updateKey = _updateAnnouncementKey(result);
+    if (_notifiedUpdateKey != updateKey) {
+      _notifiedUpdateKey = updateKey;
+      await _appNotificationService.showUpdateAvailableNotification(
+        versionLabel: _updateVersionLabel(result),
+        canAutoInstall: result.canAutoInstall,
+      );
+    }
+
+    if (_appLifecycleState != AppLifecycleState.resumed ||
+        _shownUpdateDialogKey == updateKey) {
+      return;
+    }
+
+    _shownUpdateDialogKey = updateKey;
+    await _showStartupUpdateDialog(result);
+  }
+
+  Future<void> _attemptSelectedUpdate() async {
+    if (_isCheckingStartupUpdate) {
+      return;
+    }
+
     _isCheckingStartupUpdate = true;
     try {
       final AppUpdateCheckResult result =
-          await _appUpdateService.checkForStartupUpdate();
+          await _appUpdateService.checkForStartupUpdate(startInstall: true);
       _retryStartupUpdateOnResume = result.shouldRetryOnResume;
       if (!mounted) {
         return;
@@ -601,6 +701,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
       switch (result.status) {
         case AppUpdateStatus.autoInstallStarted:
+          _availableUpdate = null;
+          _notifiedUpdateKey = null;
+          await _appNotificationService.cancelUpdateNotification();
           if (result.message.isNotEmpty) {
             _showAuthMessage(result.message);
           }
@@ -611,10 +714,26 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           }
           break;
         case AppUpdateStatus.manualUpdateAvailable:
-          await _showStartupUpdateDialog(result);
+          _availableUpdate = result;
+          if (result.canAutoInstall) {
+            await _announceAvailableUpdate(result);
+          } else if (result.actionUrl != null) {
+            await _openExternalUrl(result.actionUrl.toString());
+          } else if (result.message.isNotEmpty) {
+            _showAuthMessage(result.message);
+          }
           break;
         case AppUpdateStatus.upToDate:
+          _retryStartupUpdateOnResume = false;
+          _availableUpdate = null;
+          _notifiedUpdateKey = null;
+          await _appNotificationService.cancelUpdateNotification();
+          if (result.message.isNotEmpty) {
+            _showAuthMessage(result.message);
+          }
+          break;
         case AppUpdateStatus.unavailable:
+          _availableUpdate = null;
           if (result.message.isNotEmpty) {
             _showAuthMessage(result.message);
           }
@@ -631,7 +750,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
 
     final Uri? actionUrl = result.actionUrl;
-    if (actionUrl == null) {
+    if (actionUrl == null && !result.canAutoInstall) {
       if (result.message.isNotEmpty) {
         _showAuthMessage(result.message);
       }
@@ -643,13 +762,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       final bool? openUpdate = await showDialog<bool>(
         context: context,
         builder: (BuildContext context) {
-          final String latestVersion =
-              result.latestRelease?.version ?? 'the latest release';
+          final String latestVersion = _updateVersionLabel(result);
+          final String actionLabel =
+              result.canAutoInstall ? 'Update now' : 'Download update';
+          final String updateLead = latestVersion.isEmpty
+              ? 'A Backchat update is available.'
+              : 'Backchat $latestVersion is available.';
+          final String content = result.canAutoInstall
+              ? '$updateLead Install it now, or leave it for later.'
+              : '$updateLead This platform still needs the latest download to finish the upgrade.';
           return AlertDialog(
             title: const Text('Update available'),
-            content: Text(
-              'Backchat $latestVersion is available. This build can check for updates at startup, but this platform still needs the latest download to finish the upgrade.',
-            ),
+            content: Text(content),
             actions: <Widget>[
               TextButton(
                 onPressed: () => Navigator.of(context).pop(false),
@@ -657,18 +781,34 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               ),
               FilledButton(
                 onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Download update'),
+                child: Text(actionLabel),
               ),
             ],
           );
         },
       );
       if (openUpdate == true && mounted) {
-        await _openExternalUrl(actionUrl.toString());
+        if (result.canAutoInstall) {
+          await _attemptSelectedUpdate();
+        } else if (actionUrl != null) {
+          await _openExternalUrl(actionUrl.toString());
+        }
       }
     } finally {
       _isShowingStartupUpdateDialog = false;
     }
+  }
+
+  void _startUpdatePolling() {
+    _updateCheckTimer?.cancel();
+    _updateCheckTimer = Timer.periodic(_updateCheckInterval, (_) {
+      unawaited(_checkForStartupUpdate());
+    });
+  }
+
+  void _stopUpdatePolling() {
+    _updateCheckTimer?.cancel();
+    _updateCheckTimer = null;
   }
 
   void _startMessagePolling() {

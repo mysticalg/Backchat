@@ -74,6 +74,34 @@ class AppNotificationService {
     }
   }
 
+  Future<void> showUpdateAvailableNotification({
+    required String versionLabel,
+    required bool canAutoInstall,
+  }) async {
+    if (!_supportsAndroidNotifications) {
+      return;
+    }
+
+    final String actionLabel =
+        canAutoInstall ? 'Update now' : 'Download update';
+    final String body = versionLabel.trim().isEmpty
+        ? 'A new Backchat release is ready. Open Backchat to $actionLabel.'
+        : 'Backchat $versionLabel is ready. Open Backchat to $actionLabel.';
+    try {
+      await _channel.invokeMethod<void>(
+        'showUpdateAvailableNotification',
+        <String, dynamic>{
+          'title': 'Backchat update available',
+          'body': body,
+        },
+      );
+    } on MissingPluginException {
+      // Ignore unsupported platforms.
+    } on PlatformException {
+      // Notification failures should not break update flow.
+    }
+  }
+
   Future<void> cancelNotification(int notificationId) async {
     if (!_supportsAndroidNotifications) {
       return;
@@ -98,6 +126,20 @@ class AppNotificationService {
 
     try {
       await _channel.invokeMethod<void>('cancelIncomingCallNotification');
+    } on MissingPluginException {
+      // Ignore unsupported platforms.
+    } on PlatformException {
+      // Ignore cleanup errors.
+    }
+  }
+
+  Future<void> cancelUpdateNotification() async {
+    if (!_supportsAndroidNotifications) {
+      return;
+    }
+
+    try {
+      await _channel.invokeMethod<void>('cancelUpdateNotification');
     } on MissingPluginException {
       // Ignore unsupported platforms.
     } on PlatformException {
