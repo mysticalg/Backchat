@@ -162,6 +162,7 @@ class AuthService {
         _browserPlatform = browserPlatform ?? _detectBrowserLaunchPlatform();
 
   static const String _usernameAccountsStorageKey = 'username_accounts_v1';
+  static const String _authenticatedUserStorageKey = 'authenticated_user_v1';
   static const String _pendingOAuthStateStorageKey = 'pending_oauth_state_v1';
   static const String _pendingOAuthProviderStorageKey =
       'pending_oauth_provider_v1';
@@ -182,14 +183,23 @@ class AuthService {
   bool get isRemoteApiEnabled => _apiService.isConfigured;
 
   Future<AppUser?> tryRestoreAuthenticatedUser() async {
+    final AppUser? cachedUser = await _readAuthenticatedUser();
     if (!_apiService.isConfigured) {
-      return null;
+      return cachedUser;
     }
 
     try {
-      return await _apiService.fetchMyProfile();
+      final AppUser user = await _apiService.fetchMyProfile();
+      await rememberAuthenticatedUser(user);
+      return user;
+    } on BackchatApiException catch (e) {
+      if (e.status == 'unauthorized') {
+        await clearRememberedAuthenticatedUser();
+        return null;
+      }
+      return cachedUser;
     } catch (_) {
-      return null;
+      return cachedUser;
     }
   }
 
@@ -216,6 +226,7 @@ class AuthService {
         maxAttempts: _oauthResumePollAttempts,
       );
       if (user != null) {
+        await rememberAuthenticatedUser(user);
         await _clearPendingOAuthSession();
       }
       return user;
@@ -272,6 +283,9 @@ class AuthService {
             recoveryEmail: cleanedRecoveryEmail,
             password: submittedPassword,
           );
+          if (user != null) {
+            await rememberAuthenticatedUser(user);
+          }
           return UsernameSignInResult(
             status: UsernameSignInStatus.signedIn,
             user: user,
@@ -285,6 +299,9 @@ class AuthService {
             recoveryEmail: cleanedRecoveryEmail,
             password: submittedPassword,
           );
+          if (user != null) {
+            await rememberAuthenticatedUser(user);
+          }
           return UsernameSignInResult(
             status: UsernameSignInStatus.passwordSet,
             user: user,
@@ -298,13 +315,18 @@ class AuthService {
             recoveryEmail: cleanedRecoveryEmail,
             password: submittedPassword,
           );
+          if (user != null) {
+            await rememberAuthenticatedUser(user);
+          }
           return UsernameSignInResult(
             status: UsernameSignInStatus.created,
             user: user,
           );
         }
-        return const UsernameSignInResult(
-          status: UsernameSignInStatus.serverUnavailable,
+        return _signInOrCreateWithUsernameLocal(
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       } on BackchatApiException catch (e) {
         if (e.status == 'invalid_username') {
@@ -353,12 +375,16 @@ class AuthService {
             linkedUsername: e.payload?['linkedUsername']?.toString(),
           );
         }
-        return const UsernameSignInResult(
-          status: UsernameSignInStatus.serverUnavailable,
+        return _signInOrCreateWithUsernameLocal(
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       } catch (_) {
-        return const UsernameSignInResult(
-          status: UsernameSignInStatus.serverUnavailable,
+        return _signInOrCreateWithUsernameLocal(
+          username: cleanedUsername,
+          recoveryEmail: cleanedRecoveryEmail,
+          password: submittedPassword,
         );
       }
     }
@@ -414,9 +440,11 @@ class AuthService {
           recoveryEmail: existing.recoveryEmail,
           password: password,
         );
+        final AppUser user = _toAppUser(existing);
+        await rememberAuthenticatedUser(user);
         return UsernameSignInResult(
           status: UsernameSignInStatus.signedIn,
-          user: _toAppUser(existing),
+          user: user,
         );
       }
 
@@ -448,9 +476,11 @@ class AuthService {
           recoveryEmail: existing.recoveryEmail,
           password: password,
         );
+        final AppUser user = _toAppUser(existing);
+        await rememberAuthenticatedUser(user);
         return UsernameSignInResult(
           status: UsernameSignInStatus.passwordSet,
-          user: _toAppUser(existing),
+          user: user,
         );
       }
 
@@ -459,9 +489,11 @@ class AuthService {
         recoveryEmail: existing.recoveryEmail,
         password: '',
       );
+      final AppUser user = _toAppUser(existing);
+      await rememberAuthenticatedUser(user);
       return UsernameSignInResult(
         status: UsernameSignInStatus.signedIn,
-        user: _toAppUser(existing),
+        user: user,
       );
     }
 
@@ -509,10 +541,12 @@ class AuthService {
       recoveryEmail: created.recoveryEmail,
       password: password,
     );
+    final AppUser user = _toAppUser(created);
+    await rememberAuthenticatedUser(user);
 
     return UsernameSignInResult(
       status: UsernameSignInStatus.created,
-      user: _toAppUser(created),
+      user: user,
     );
   }
 
@@ -590,6 +624,20 @@ class AuthService {
   Future<void> signOut(AppUser user) async {
     await _apiService.clearToken();
     await _clearPendingOAuthSession();
+    await clearRememberedAuthenticatedUser();
+  }
+
+  Future<void> rememberAuthenticatedUser(AppUser user) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _authenticatedUserStorageKey,
+      jsonEncode(_appUserToJson(user)),
+    );
+  }
+
+  Future<void> clearRememberedAuthenticatedUser() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_authenticatedUserStorageKey);
   }
 
   Future<List<_UsernameAccount>> _readUsernameAccounts() async {
@@ -730,6 +778,45 @@ class AuthService {
     );
   }
 
+  Map<String, dynamic> _appUserToJson(AppUser user) {
+    return <String, dynamic>{
+      'id': user.id,
+      'displayName': user.displayName,
+      'avatarUrl': user.avatarUrl,
+      'provider': user.provider.name,
+      'username': user.username,
+      'quote': user.quote,
+      'status': user.status.name,
+      'lastSeenAtUtc': user.lastSeenAt?.toUtc().toIso8601String(),
+    };
+  }
+
+  AppUser _appUserFromJson(Map<String, dynamic> json) {
+    final String providerName =
+        json['provider']?.toString() ?? AuthProvider.username.name;
+    final String statusName =
+        json['status']?.toString() ?? PresenceStatus.online.name;
+    final AuthProvider provider = AuthProvider.values.firstWhere(
+      (AuthProvider value) => value.name == providerName,
+      orElse: () => AuthProvider.username,
+    );
+    final PresenceStatus status = PresenceStatus.values.firstWhere(
+      (PresenceStatus value) => value.name == statusName,
+      orElse: () => PresenceStatus.online,
+    );
+    return AppUser(
+      id: json['id']?.toString() ?? '',
+      displayName: json['displayName']?.toString() ?? '',
+      avatarUrl: json['avatarUrl']?.toString() ?? '',
+      provider: provider,
+      username: json['username']?.toString() ?? '',
+      quote: json['quote']?.toString() ?? '',
+      status: status,
+      lastSeenAt:
+          DateTime.tryParse(json['lastSeenAtUtc']?.toString() ?? '')?.toLocal(),
+    );
+  }
+
   Future<AppUser?> _signInWithSocialProvider(String provider) async {
     if (!_apiService.isConfigured) {
       throw const BackchatApiException(
@@ -756,6 +843,9 @@ class AuthService {
     try {
       final AppUser? user = await _pollSocialOAuthState(start.state);
       await _clearPendingOAuthSession();
+      if (user != null) {
+        await rememberAuthenticatedUser(user);
+      }
       return user;
     } on BackchatApiException catch (e) {
       if (e.status == 'failed' ||
@@ -837,6 +927,24 @@ class AuthService {
     await prefs.remove(_pendingOAuthProviderStorageKey);
     await prefs.remove(_pendingOAuthStateStorageKey);
     await prefs.remove(_pendingOAuthStartedAtStorageKey);
+  }
+
+  Future<AppUser?> _readAuthenticatedUser() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? raw = prefs.getString(_authenticatedUserStorageKey);
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        return null;
+      }
+      return _appUserFromJson(decoded);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<bool> _launchBrowser(Uri uri) async {

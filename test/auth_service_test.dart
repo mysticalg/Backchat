@@ -242,7 +242,8 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
   }
 }
 
-class _RestorableRemoteSessionApiClient extends _SuccessfulSocialOAuthApiClient {
+class _RestorableRemoteSessionApiClient
+    extends _SuccessfulSocialOAuthApiClient {
   @override
   Future<AppUser> fetchMyProfile() async {
     return AppUser(
@@ -569,6 +570,46 @@ void main() {
 
     expect(user?.username, 'google_user');
     expect(user?.provider, AuthProvider.google);
+  });
+
+  test('restores the last authenticated user from cached session data',
+      () async {
+    final AuthService signingInService =
+        AuthService(apiService: _FailingConfiguredApiClient());
+
+    final UsernameSignInResult result =
+        await signingInService.signInOrCreateWithUsername(
+      username: 'autologin_user',
+      recoveryEmail: 'autologin_user@example.com',
+      password: '',
+    );
+
+    final AuthService restoredService =
+        AuthService(apiService: _FailingConfiguredApiClient());
+    final AppUser? restoredUser =
+        await restoredService.tryRestoreAuthenticatedUser();
+
+    expect(result.status, UsernameSignInStatus.created);
+    expect(restoredUser?.username, 'autologin_user');
+    expect(restoredUser?.provider, AuthProvider.username);
+  });
+
+  test('logout clears the cached authenticated user', () async {
+    final AuthService authService =
+        AuthService(apiService: _FailingConfiguredApiClient());
+
+    final UsernameSignInResult result =
+        await authService.signInOrCreateWithUsername(
+      username: 'logout_user',
+      recoveryEmail: 'logout_user@example.com',
+      password: '',
+    );
+
+    await authService.signOut(result.user!);
+    final AppUser? restoredUser =
+        await authService.tryRestoreAuthenticatedUser();
+
+    expect(restoredUser, isNull);
   });
 
   test('resumes a pending social sign-in after the app returns', () async {

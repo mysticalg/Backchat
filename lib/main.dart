@@ -13,6 +13,7 @@ import 'models/app_user.dart';
 import 'models/call_models.dart';
 import 'models/chat_message.dart';
 import 'services/auth_service.dart';
+import 'services/app_notification_service.dart';
 import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
 import 'services/call_service.dart';
@@ -78,6 +79,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final ContactsService _contactsService = ContactsService();
   final EncryptionService _encryptionService = EncryptionService();
   final MessagingService _messagingService = MessagingService();
+  final AppNotificationService _appNotificationService =
+      AppNotificationService();
   final AppWindowService _appWindowService = AppWindowService();
   final CallService _callService = CallService();
   final BackchatApiClient _profileApi = BackchatApiService();
@@ -110,6 +113,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Timer? _contactRefreshTimer;
   Timer? _callAudioCueTimer;
   _CallAudioCueMode _callAudioCueMode = _CallAudioCueMode.none;
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  ActiveCallState _lastCallState = ActiveCallState.idle;
 
   SecretKey? _sharedSecret;
 
@@ -145,7 +150,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
     if (state == AppLifecycleState.resumed) {
+      unawaited(_appNotificationService.cancelIncomingCallNotification());
       unawaited(_handleAppResumed());
     }
   }
@@ -156,6 +163,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
 
     final ActiveCallState callState = _callService.state;
+    final ActiveCallState previousCallState = _lastCallState;
     final AppUser? peer = callState.peer;
     if (peer != null) {
       final int contactIndex =
@@ -176,6 +184,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       }
     }
     _syncCallAudioCue(callState);
+    unawaited(
+      _syncCallNotification(
+        previousState: previousCallState,
+        nextState: callState,
+      ),
+    );
+    _lastCallState = callState;
     setState(() {});
   }
 
@@ -218,6 +233,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _stopContactRefresh();
       _messagingService.reset();
       await _callService.deactivate();
+      await _appNotificationService.cancelAllNotifications();
 
       if (!mounted) {
         return;
@@ -422,6 +438,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Future<void> _activateUserSession(AppUser user) async {
     _stopMessagePolling();
     _stopContactRefresh();
+    await _authService.rememberAuthenticatedUser(user);
     await _messagingService.activateForUser(user.id);
     await _callService.activateForUser(user);
 
@@ -436,6 +453,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _conversation.clear();
     });
 
+    await _appNotificationService.requestPermissionIfNeeded();
     await _loadContacts();
     _startMessagePolling();
     _startContactRefresh();
@@ -518,6 +536,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           await _messagingService.syncIncoming(currentUser.id);
       if (newMessages.isNotEmpty) {
         await _loadContacts();
+        await _notifyForIncomingMessages(newMessages);
         await _refreshConversation(scrollToBottom: true);
       }
       await _syncWindowUnreadCount();
@@ -554,10 +573,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
-    await _messagingService.markConversationRead(
-      currentUserId: currentUser.id,
-      contactUserId: selectedContact.id,
-    );
+    final bool shouldMarkConversationRead =
+        _appLifecycleState == AppLifecycleState.resumed;
+    if (shouldMarkConversationRead) {
+      await _messagingService.markConversationRead(
+        currentUserId: currentUser.id,
+        contactUserId: selectedContact.id,
+      );
+      await _appNotificationService.cancelNotification(
+        _messageNotificationId(selectedContact.id),
+      );
+    }
     final List<ChatMessage> messages =
         await _messagingService.listForPair(currentUser.id, selectedContact.id);
     final List<_ConversationEntry> renderedConversation =
@@ -693,6 +719,85 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     await _appWindowService.setUnreadCount(unreadCount);
   }
 
+  Future<void> _notifyForIncomingMessages(List<ChatMessage> newMessages) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null || newMessages.isEmpty) {
+      return;
+    }
+
+    final Map<String, List<ChatMessage>> groupedBySender =
+        <String, List<ChatMessage>>{};
+    for (final ChatMessage message in newMessages) {
+      if (!message.isIncomingFor(currentUser.id)) {
+        continue;
+      }
+      groupedBySender
+          .putIfAbsent(message.fromUserId, () => <ChatMessage>[])
+          .add(message);
+    }
+
+    for (final MapEntry<String, List<ChatMessage>> entry
+        in groupedBySender.entries) {
+      if (!_shouldShowConversationNotification(entry.key)) {
+        continue;
+      }
+
+      final ChatMessage latestMessage = entry.value.reduce(
+        (ChatMessage current, ChatMessage next) =>
+            next.sentAt.isAfter(current.sentAt) ? next : current,
+      );
+      final String preview = await _decodeMessageText(latestMessage);
+      final int unreadCount = _messagingService.unreadCountForContact(
+        currentUserId: currentUser.id,
+        contactUserId: entry.key,
+      );
+      await _appNotificationService.showIncomingMessageNotification(
+        notificationId: _messageNotificationId(entry.key),
+        senderName: _displayNameForUserId(entry.key),
+        body: preview.isEmpty ? 'New message' : preview,
+        unreadCount: unreadCount,
+      );
+    }
+  }
+
+  Future<void> _syncCallNotification({
+    required ActiveCallState previousState,
+    required ActiveCallState nextState,
+  }) async {
+    if (nextState.isIncoming &&
+        (!previousState.isIncoming ||
+            previousState.callId != nextState.callId) &&
+        nextState.peer != null &&
+        _appLifecycleState != AppLifecycleState.resumed) {
+      await _appNotificationService.showIncomingCallNotification(
+        callerName: nextState.peer!.displayName,
+        kind: nextState.kind,
+      );
+      return;
+    }
+
+    if (previousState.isIncoming && !nextState.isIncoming) {
+      await _appNotificationService.cancelIncomingCallNotification();
+    }
+  }
+
+  bool _shouldShowConversationNotification(String contactUserId) {
+    return _appLifecycleState != AppLifecycleState.resumed ||
+        _selectedContact?.id != contactUserId;
+  }
+
+  int _messageNotificationId(String contactUserId) {
+    return _stableNotificationId('message:$contactUserId');
+  }
+
+  int _stableNotificationId(String value) {
+    int hash = 17;
+    for (final int codeUnit in value.codeUnits) {
+      hash = 0x1fffffff & (hash * 31 + codeUnit);
+    }
+    return hash & 0x3fffffff;
+  }
+
   Future<void> _startCall(CallKind kind) async {
     final AppUser? selectedContact = _selectedContact;
     if (selectedContact == null) {
@@ -765,7 +870,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               return;
           }
         },
-        itemBuilder: (BuildContext context) => const <PopupMenuEntry<_SessionMenuAction>>[
+        itemBuilder: (BuildContext context) =>
+            const <PopupMenuEntry<_SessionMenuAction>>[
           PopupMenuItem<_SessionMenuAction>(
             value: _SessionMenuAction.editProfile,
             child: ListTile(
@@ -1347,6 +1453,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     setState(() {
       _currentUser = updatedUser;
     });
+    await _authService.rememberAuthenticatedUser(updatedUser);
     await _loadContacts();
     _showAuthMessage('Profile updated.');
   }
@@ -1430,8 +1537,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   @override
   Widget build(BuildContext context) {
     final AppUser? user = _currentUser;
-    final bool compactLayout =
-        user != null && _useCompactChatLayout(context);
+    final bool compactLayout = user != null && _useCompactChatLayout(context);
     final bool showingMobileConversation =
         compactLayout && _selectedContact != null;
 
@@ -1764,12 +1870,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return <Widget>[
       IconButton(
         tooltip: 'Voice call',
-        onPressed: anotherCallIsActive ? null : () => _startCall(CallKind.audio),
+        onPressed:
+            anotherCallIsActive ? null : () => _startCall(CallKind.audio),
         icon: const Icon(Icons.call_outlined),
       ),
       IconButton(
         tooltip: 'Video call',
-        onPressed: anotherCallIsActive ? null : () => _startCall(CallKind.video),
+        onPressed:
+            anotherCallIsActive ? null : () => _startCall(CallKind.video),
         icon: const Icon(Icons.videocam_outlined),
       ),
     ];
@@ -1855,9 +1963,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                   backgroundImage: user.avatarUrl.isNotEmpty
                       ? NetworkImage(user.avatarUrl)
                       : null,
-                  child: user.avatarUrl.isEmpty
-                      ? const Icon(Icons.person)
-                      : null,
+                  child:
+                      user.avatarUrl.isEmpty ? const Icon(Icons.person) : null,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1952,8 +2059,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       children: <Widget>[
         CircleAvatar(
           radius: 22,
-          backgroundImage:
-              contact.avatarUrl.isNotEmpty ? NetworkImage(contact.avatarUrl) : null,
+          backgroundImage: contact.avatarUrl.isNotEmpty
+              ? NetworkImage(contact.avatarUrl)
+              : null,
           child: contact.avatarUrl.isEmpty
               ? Text(contact.displayName.characters.first.toUpperCase())
               : null,
