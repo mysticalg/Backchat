@@ -82,6 +82,25 @@ class CallService extends ChangeNotifier {
     _restartSignalPolling();
   }
 
+  Future<void> deactivate() async {
+    _signalPollTimer?.cancel();
+    _signalPollTimer = null;
+    _idleResetTimer?.cancel();
+    _idleResetTimer = null;
+    _currentUser = null;
+    _signalSinceId = 0;
+    _pendingRemoteOffer = null;
+    _activeCall = null;
+    _pendingRemoteCandidates.clear();
+    _bufferedOutboundCandidates.clear();
+    _sentCandidateFingerprints.clear();
+    _serverConfig = _fallbackServerConfig;
+    await _teardownPeerResources();
+    _clearDiagnostics();
+    _updateDiagnostics();
+    _setState(ActiveCallState.idle);
+  }
+
   Future<void> refreshServerConfig() async {
     if (!_apiService.isConfigured || _currentUser == null) {
       _serverConfig = _fallbackServerConfig;

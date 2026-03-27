@@ -54,6 +54,12 @@ enum _CallAudioCueMode {
   outgoingDialing,
 }
 
+enum _SessionMenuAction {
+  editProfile,
+  callSettings,
+  signOut,
+}
+
 class BackchatHomePage extends StatefulWidget {
   const BackchatHomePage({super.key});
 
@@ -189,6 +195,53 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _selectedContact = null;
       _conversation.clear();
     });
+  }
+
+  Future<void> _signOutCurrentUser() async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null || _isAuthBusy) {
+      return;
+    }
+
+    setState(() {
+      _isAuthBusy = true;
+    });
+
+    try {
+      if (!_callService.state.isIdle) {
+        await _callService.endCall();
+      } else {
+        await _callService.clearEndedState();
+      }
+      await _authService.signOut(currentUser);
+      _stopMessagePolling();
+      _stopContactRefresh();
+      _messagingService.reset();
+      await _callService.deactivate();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _currentUser = null;
+        _contacts = <AppUser>[];
+        _selectedContact = null;
+        _conversation.clear();
+      });
+
+      await _syncWindowUnreadCount();
+      await _loadRememberedAccounts();
+      _showAuthMessage('Signed out.');
+    } catch (_) {
+      _showAuthMessage('Could not sign out right now.');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAuthBusy = false;
+        });
+      }
+    }
   }
 
   void _syncCallAudioCue(ActiveCallState callState) {
@@ -681,6 +734,70 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
   }
 
+  List<Widget>? _buildAuthenticatedAppBarActions({
+    required AppUser? user,
+    required bool showingMobileConversation,
+    required AppUser? selectedContact,
+  }) {
+    if (user == null) {
+      return null;
+    }
+
+    final List<Widget> actions = <Widget>[];
+    if (showingMobileConversation && selectedContact != null) {
+      actions.addAll(_buildMobileConversationAppBarActions(selectedContact));
+    }
+
+    actions.add(
+      PopupMenuButton<_SessionMenuAction>(
+        tooltip: 'Account options',
+        enabled: !_isAuthBusy,
+        onSelected: (_SessionMenuAction action) {
+          switch (action) {
+            case _SessionMenuAction.editProfile:
+              _editProfile();
+              return;
+            case _SessionMenuAction.callSettings:
+              _editCallSettings();
+              return;
+            case _SessionMenuAction.signOut:
+              unawaited(_signOutCurrentUser());
+              return;
+          }
+        },
+        itemBuilder: (BuildContext context) => const <PopupMenuEntry<_SessionMenuAction>>[
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.editProfile,
+            child: ListTile(
+              leading: Icon(Icons.edit_outlined),
+              title: Text('Edit profile'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.callSettings,
+            child: ListTile(
+              leading: Icon(Icons.settings_ethernet_outlined),
+              title: Text('Call settings'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuDivider(),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.signOut,
+            child: ListTile(
+              leading: Icon(Icons.logout),
+              title: Text('Sign out'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return actions;
+  }
+
   Future<void> _toggleCallMute() async {
     await _callService.toggleMute();
   }
@@ -953,11 +1070,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _showAuthMessage('Recovered username: $username');
   }
 
-  Future<void> _inviteByUsername() async {
+  Future<bool> _inviteByUsername() async {
     if (_currentUser == null || _isInviteBusy) {
-      return;
+      return false;
     }
 
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => _isInviteBusy = true);
     try {
       final InviteByUsernameResult result =
@@ -972,36 +1090,142 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           await _loadContacts();
           _inviteUsernameController.clear();
           _showAuthMessage('Added ${result.contact?.displayName} to contacts.');
-          break;
+          return true;
         case InviteByUsernameStatus.alreadyContact:
           _showAuthMessage(
             '${result.contact?.displayName} is already in your contacts.',
           );
-          break;
+          return false;
         case InviteByUsernameStatus.selfInvite:
           _showAuthMessage('You cannot add your own username as a contact.');
-          break;
+          return false;
         case InviteByUsernameStatus.notFound:
           _showAuthMessage('No account found with that username.');
-          break;
+          return false;
         case InviteByUsernameStatus.invalidUsername:
           _showAuthMessage(
             'Enter a valid username (3-24 letters/numbers/underscore).',
           );
-          break;
+          return false;
         case InviteByUsernameStatus.serverUnavailable:
           _showAuthMessage(
             'Invite service is currently unavailable. Please try again.',
           );
-          break;
+          return false;
       }
     } catch (_) {
       _showAuthMessage('Invite failed unexpectedly. Please try again.');
+      return false;
     } finally {
       if (mounted) {
         setState(() => _isInviteBusy = false);
       }
     }
+  }
+
+  Future<void> _showCompactInviteSheet() async {
+    if (_currentUser == null) {
+      return;
+    }
+
+    bool isSubmitting = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        final ThemeData theme = Theme.of(sheetContext);
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setSheetState) {
+            Future<void> submitInvite() async {
+              if (isSubmitting) {
+                return;
+              }
+              setSheetState(() {
+                isSubmitting = true;
+              });
+              final bool added = await _inviteByUsername();
+              if (!sheetContext.mounted) {
+                return;
+              }
+              if (added) {
+                Navigator.of(sheetContext).pop();
+                return;
+              }
+              setSheetState(() {
+                isSubmitting = false;
+              });
+            }
+
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                8,
+                20,
+                MediaQuery.viewInsetsOf(sheetContext).bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          'Invite contact',
+                          style: theme.textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close invite',
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'Add someone by username without covering the rest of the chat layout.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _inviteUsernameController,
+                    autofocus: true,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => submitInvite(),
+                    decoration: const InputDecoration(
+                      hintText: 'Invite by username',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: isSubmitting ? null : submitInvite,
+                    icon: isSubmitting
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.person_add),
+                    label: const Text('Add contact'),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _editProfile() async {
@@ -1229,9 +1453,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           title: showingMobileConversation
               ? _buildMobileConversationAppBarTitle(_selectedContact!)
               : const Text('Backchat Messenger'),
-          actions: showingMobileConversation
-              ? _buildMobileConversationAppBarActions(_selectedContact!)
-              : null,
+          actions: _buildAuthenticatedAppBarActions(
+            user: user,
+            showingMobileConversation: showingMobileConversation,
+            selectedContact: _selectedContact,
+          ),
         ),
         body: user == null
             ? _buildAuthView()
@@ -1550,16 +1776,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Widget _buildCompactContactsView(AppUser user) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return ListView(
+      padding: const EdgeInsets.all(12),
       children: <Widget>[
         _buildCompactUserCard(user),
         if (!_callService.state.isIdle) ...<Widget>[
           const SizedBox(height: 12),
-          _buildCallPanel(),
+          _buildCallPanel(compactLayout: true),
         ],
         const SizedBox(height: 12),
-        Expanded(child: _buildContactsPane(user)),
+        _buildCompactContactsPane(user),
       ],
     );
   }
@@ -1582,7 +1808,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           if (!_callService.state.isIdle) ...<Widget>[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _buildCallPanel(),
+              child: _buildCallPanel(compactLayout: true),
             ),
             const SizedBox(height: 12),
           ],
@@ -1704,6 +1930,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _isAuthBusy ? null : _signOutCurrentUser,
+                icon: const Icon(Icons.logout),
+                label: const Text('Sign out'),
+              ),
             ),
           ],
         ),
@@ -2098,7 +2333,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     );
   }
 
-  Widget _buildCallPanel() {
+  Widget _buildCallPanel({bool compactLayout = false}) {
     final ThemeData theme = Theme.of(context);
     final ActiveCallState callState = _callService.state;
     final AppUser? peer = callState.peer;
@@ -2145,25 +2380,30 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               ],
             ),
             const SizedBox(height: 14),
-            _buildCallMediaStage(callState),
+            _buildCallMediaStage(callState, compactLayout: compactLayout),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
               runSpacing: 10,
               children: _buildCallActionButtons(callState),
             ),
-            const SizedBox(height: 12),
-            _buildCallDiagnosticsBlock(
-              diagnostics: callState.diagnostics,
-              showTitle: false,
-            ),
+            if (!compactLayout) ...<Widget>[
+              const SizedBox(height: 12),
+              _buildCallDiagnosticsBlock(
+                diagnostics: callState.diagnostics,
+                showTitle: false,
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _buildCallMediaStage(ActiveCallState callState) {
+  Widget _buildCallMediaStage(
+    ActiveCallState callState, {
+    bool compactLayout = false,
+  }) {
     final ThemeData theme = Theme.of(context);
     final AppUser? peer = callState.peer;
     if (peer == null) {
@@ -2173,7 +2413,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     final bool showRemoteVideo =
         callState.kind == CallKind.video && callState.hasRemoteVideo;
     return SizedBox(
-      height: 220,
+      height: compactLayout ? 160 : 220,
       child: Stack(
         children: <Widget>[
           Positioned.fill(
@@ -2406,6 +2646,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   Widget _buildContactsPane(AppUser user) {
     final ThemeData theme = Theme.of(context);
+    final bool compactLayout = _useCompactChatLayout(context);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
@@ -2430,29 +2671,40 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                   style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 14),
-                TextField(
-                  controller: _inviteUsernameController,
-                  decoration: const InputDecoration(
-                    hintText: 'Invite by username',
-                    border: OutlineInputBorder(),
-                    isDense: true,
+                if (compactLayout)
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _showCompactInviteSheet,
+                      icon: const Icon(Icons.person_add),
+                      label: const Text('Invite contact'),
+                    ),
+                  )
+                else ...<Widget>[
+                  TextField(
+                    controller: _inviteUsernameController,
+                    decoration: const InputDecoration(
+                      hintText: 'Invite by username',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _isInviteBusy ? null : _inviteByUsername,
-                    icon: _isInviteBusy
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.person_add),
-                    label: const Text('Add contact'),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _isInviteBusy ? null : _inviteByUsername,
+                      icon: _isInviteBusy
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.person_add),
+                      label: const Text('Add contact'),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -2477,6 +2729,73 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                     },
                   ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactContactsPane(AppUser user) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Contacts',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${_contacts.length} saved contacts',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _showCompactInviteSheet,
+                    icon: const Icon(Icons.person_add),
+                    label: const Text('Invite contact'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (_contacts.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: _buildEmptyConversationState(
+                title: 'No contacts yet',
+                subtitle:
+                    'Add someone by username to see them here with online status and unread counts.',
+              ),
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(10),
+              itemCount: _contacts.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (BuildContext context, int index) {
+                final AppUser contact = _contacts[index];
+                return _buildContactTile(
+                  currentUser: user,
+                  contact: contact,
+                );
+              },
+            ),
         ],
       ),
     );
