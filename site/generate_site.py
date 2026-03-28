@@ -30,16 +30,16 @@ if not SITE_URL.endswith("/"):
 PLATFORM_CONFIG = [
     {
         "asset_prefix": "backchat-windows-x64-",
-        "suffix": ".zip",
+        "asset_suffixes": ["-setup.exe", ".zip"],
         "label": "Windows",
         "emoji": "Windows",
-        "format": "ZIP bundle",
-        "description": "Portable Windows build with unread taskbar badges, local history, presence, and desktop calling.",
+        "format": "Installer EXE",
+        "description": "Windows installer with shortcuts, uninstall support, unread taskbar badges, local history, presence, and desktop calling.",
         "cta": "Download for Windows",
     },
     {
         "asset_prefix": "backchat-macos-",
-        "suffix": ".zip",
+        "asset_suffixes": [".zip"],
         "label": "macOS",
         "emoji": "macOS",
         "format": "App bundle ZIP",
@@ -48,7 +48,7 @@ PLATFORM_CONFIG = [
     },
     {
         "asset_prefix": "backchat-linux-x64-",
-        "suffix": ".tar.gz",
+        "asset_suffixes": [".tar.gz"],
         "label": "Linux",
         "emoji": "Linux",
         "format": "tar.gz bundle",
@@ -57,7 +57,7 @@ PLATFORM_CONFIG = [
     },
     {
         "asset_prefix": "backchat-android-",
-        "suffix": ".apk",
+        "asset_suffixes": [".apk"],
         "label": "Android APK",
         "emoji": "Android",
         "format": "APK",
@@ -66,7 +66,7 @@ PLATFORM_CONFIG = [
     },
     {
         "asset_prefix": "backchat-android-",
-        "suffix": ".aab",
+        "asset_suffixes": [".aab"],
         "label": "Android App Bundle",
         "emoji": "Play",
         "format": "AAB",
@@ -99,15 +99,19 @@ def asset_map(release: dict) -> dict[str, dict]:
     assets = release.get("assets", [])
     mapped: dict[str, dict] = {}
     for platform in PLATFORM_CONFIG:
-        asset = next(
-            (
-                item
-                for item in assets
-                if item.get("name", "").startswith(platform["asset_prefix"])
-                and item.get("name", "").endswith(platform["suffix"])
-            ),
-            None,
-        )
+        asset = None
+        for suffix in platform["asset_suffixes"]:
+            asset = next(
+                (
+                    item
+                    for item in assets
+                    if item.get("name", "").startswith(platform["asset_prefix"])
+                    and item.get("name", "").endswith(suffix)
+                ),
+                None,
+            )
+            if asset is not None:
+                break
         if asset:
             mapped[platform["label"]] = asset
     return mapped

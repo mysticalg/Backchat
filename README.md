@@ -53,13 +53,19 @@ flutter run -d android
 
 ## Build installers / binaries
 
-### Windows (`.exe`)
+### Windows (`.exe` installer)
 
 ```bash
 flutter build windows --release
 ```
 
-Bundle into MSI/installer with Inno Setup or WiX using `build/windows/x64/runner/Release` output.
+To package a proper Windows installer locally with Inno Setup:
+
+```bash
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0+12 /DMyBuildDir="build\windows\x64\runner\Release" windows\installer\backchat.iss
+```
+
+The GitHub release workflow now publishes both a Windows installer EXE and a portable ZIP.
 
 ### macOS (`.app`, `.dmg`)
 

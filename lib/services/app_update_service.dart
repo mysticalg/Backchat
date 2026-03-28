@@ -300,19 +300,25 @@ class AppUpdateService {
 
   Uri? _preferredDownloadUrl(Map<String, dynamic> release) {
     return switch (_platform) {
-      AppUpdatePlatform.android =>
-        _findAssetUrl(release, prefix: 'backchat-android-', suffix: '.apk'),
+      AppUpdatePlatform.android => _findAssetUrl(
+          release,
+          prefix: 'backchat-android-',
+          suffixes: const <String>['.apk'],
+        ),
       AppUpdatePlatform.windows => _findAssetUrl(
           release,
           prefix: 'backchat-windows-x64-',
-          suffix: '.zip',
+          suffixes: const <String>['-setup.exe', '.zip'],
         ),
-      AppUpdatePlatform.macos =>
-        _findAssetUrl(release, prefix: 'backchat-macos-', suffix: '.zip'),
+      AppUpdatePlatform.macos => _findAssetUrl(
+          release,
+          prefix: 'backchat-macos-',
+          suffixes: const <String>['.zip'],
+        ),
       AppUpdatePlatform.linux => _findAssetUrl(
           release,
           prefix: 'backchat-linux-x64-',
-          suffix: '.tar.gz',
+          suffixes: const <String>['.tar.gz'],
         ),
       _ => null,
     };
@@ -321,20 +327,22 @@ class AppUpdateService {
   Uri? _findAssetUrl(
     Map<String, dynamic> release, {
     required String prefix,
-    required String suffix,
+    required List<String> suffixes,
   }) {
     final Object? rawAssets = release['assets'];
     if (rawAssets is! List<Object?>) {
       return null;
     }
 
-    for (final Object? rawAsset in rawAssets) {
-      if (rawAsset is! Map<String, dynamic>) {
-        continue;
-      }
-      final String assetName = rawAsset['name']?.toString() ?? '';
-      if (assetName.startsWith(prefix) && assetName.endsWith(suffix)) {
-        return _tryParseUri(rawAsset['browser_download_url']?.toString());
+    for (final String suffix in suffixes) {
+      for (final Object? rawAsset in rawAssets) {
+        if (rawAsset is! Map<String, dynamic>) {
+          continue;
+        }
+        final String assetName = rawAsset['name']?.toString() ?? '';
+        if (assetName.startsWith(prefix) && assetName.endsWith(suffix)) {
+          return _tryParseUri(rawAsset['browser_download_url']?.toString());
+        }
       }
     }
     return null;

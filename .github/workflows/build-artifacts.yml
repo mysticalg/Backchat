@@ -80,6 +80,23 @@ jobs:
             flutter build windows --release
           }
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Package Windows installer
+        shell: pwsh
+        run: |
+          $appVersion = "${{ needs.prepare-release.outputs.app_version }}"
+          $buildDir = (Resolve-Path "build/windows/x64/runner/Release").Path
+          $issPath = (Resolve-Path "windows/installer/backchat.iss").Path
+          $outputDir = (Resolve-Path ".").Path
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$appVersion" `
+            "/DMyBuildDir=$buildDir" `
+            "/DMyOutputDir=$outputDir" `
+            $issPath
+
       - name: Package Windows release
         shell: pwsh
         run: |
@@ -90,7 +107,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-asset-windows
-          path: backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}.zip
+          path: |
+            backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}-setup.exe
+            backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}.zip
 
   build-macos:
     needs: prepare-release

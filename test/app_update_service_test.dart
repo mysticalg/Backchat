@@ -25,6 +25,11 @@ void main() {
       'html_url': 'https://github.com/mysticalg/Backchat/releases/tag/$tagName',
       'assets': <Map<String, dynamic>>[
         <String, dynamic>{
+          'name': 'backchat-windows-x64-0.1.0+9-setup.exe',
+          'browser_download_url':
+              'https://example.com/backchat-windows-setup.exe',
+        },
+        <String, dynamic>{
           'name': 'backchat-windows-x64-0.1.0+9.zip',
           'browser_download_url': 'https://example.com/backchat-windows.zip',
         },
@@ -69,6 +74,31 @@ void main() {
 
     expect(result.status, AppUpdateStatus.manualUpdateAvailable);
     expect(result.latestRelease?.version, '0.1.0+9');
+    expect(
+      result.actionUrl,
+      Uri.parse('https://example.com/backchat-windows-setup.exe'),
+    );
+  });
+
+  test('falls back to portable windows zip when no installer exists', () async {
+    final AppUpdateService service = AppUpdateService(
+      packageInfoLoader: () async => packageInfo(),
+      latestReleaseFetcher: () async {
+        final Map<String, dynamic> release = latestRelease();
+        final List<dynamic> assets = release['assets'] as List<dynamic>;
+        assets.removeWhere(
+          (dynamic asset) =>
+              asset is Map<String, dynamic> &&
+              asset['name'] == 'backchat-windows-x64-0.1.0+9-setup.exe',
+        );
+        return release;
+      },
+      platform: AppUpdatePlatform.windows,
+    );
+
+    final AppUpdateCheckResult result = await service.checkForStartupUpdate();
+
+    expect(result.status, AppUpdateStatus.manualUpdateAvailable);
     expect(
       result.actionUrl,
       Uri.parse('https://example.com/backchat-windows.zip'),
