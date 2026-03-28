@@ -69,6 +69,9 @@ enum _CallAudioCueMode {
 enum _SessionMenuAction {
   editProfile,
   callSettings,
+  setStatusOnline,
+  setStatusBusy,
+  setStatusOffline,
   signOut,
 }
 
@@ -1387,6 +1390,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             case _SessionMenuAction.callSettings:
               _editCallSettings();
               return;
+            case _SessionMenuAction.setStatusOnline:
+              _changeStatus(PresenceStatus.online);
+              return;
+            case _SessionMenuAction.setStatusBusy:
+              _changeStatus(PresenceStatus.busy);
+              return;
+            case _SessionMenuAction.setStatusOffline:
+              _changeStatus(PresenceStatus.offline);
+              return;
             case _SessionMenuAction.signOut:
               unawaited(_signOutCurrentUser());
               return;
@@ -1407,6 +1419,31 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             child: ListTile(
               leading: Icon(Icons.settings_ethernet_outlined),
               title: Text('Call settings'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuDivider(),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.setStatusOnline,
+            child: ListTile(
+              leading: Icon(Icons.circle, color: Colors.green, size: 16),
+              title: Text('Set status: online'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.setStatusBusy,
+            child: ListTile(
+              leading: Icon(Icons.circle, color: Colors.orange, size: 16),
+              title: Text('Set status: busy'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.setStatusOffline,
+            child: ListTile(
+              leading: Icon(Icons.circle, color: Colors.grey, size: 16),
+              title: Text('Set status: offline'),
               contentPadding: EdgeInsets.zero,
             ),
           ),
@@ -2797,7 +2834,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           final bool wideLayout = constraints.maxWidth >= 980;
           final Widget conversationPane = Expanded(
             flex: wideLayout ? 7 : 1,
-            child: _buildConversationPane(user),
+            child: _buildConversationPane(),
           );
           final Widget contactsPane = SizedBox(
             width: wideLayout ? 320 : double.infinity,
@@ -3216,7 +3253,83 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     );
   }
 
-  Widget _buildConversationPane(AppUser user) {
+  Widget _buildDesktopConversationHeader(AppUser? selectedContact) {
+    final ThemeData theme = Theme.of(context);
+    if (selectedContact == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+        child: Text(
+          'Select a contact to start chatting.',
+          style: theme.textTheme.bodyMedium,
+        ),
+      );
+    }
+
+    final bool anotherCallIsActive = _callService.state.isInProgress &&
+        _callService.state.peer?.id != selectedContact.id;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+      child: Row(
+        children: <Widget>[
+          CircleAvatar(
+            radius: 22,
+            backgroundImage: selectedContact.avatarUrl.isNotEmpty
+                ? NetworkImage(selectedContact.avatarUrl)
+                : null,
+            child: selectedContact.avatarUrl.isEmpty
+                ? Text(
+                    selectedContact.displayName.characters.first.toUpperCase(),
+                  )
+                : null,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  selectedContact.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _contactStatusLabel(selectedContact),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          if (_selectedConversationBackgroundUrl != null)
+            IconButton(
+              tooltip: 'Clear conversation background',
+              onPressed: _clearConversationBackground,
+              icon: const Icon(Icons.wallpaper_outlined),
+            ),
+          IconButton(
+            tooltip: 'Voice call',
+            onPressed:
+                anotherCallIsActive ? null : () => _startCall(CallKind.audio),
+            icon: const Icon(Icons.call_outlined),
+          ),
+          IconButton(
+            tooltip: 'Video call',
+            onPressed:
+                anotherCallIsActive ? null : () => _startCall(CallKind.video),
+            icon: const Icon(Icons.videocam_outlined),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConversationPane() {
+    final AppUser user = _currentUser!;
     final AppUser? selectedContact = _selectedContact;
     final ThemeData theme = Theme.of(context);
     final Widget conversationPane = DecoratedBox(
@@ -3233,208 +3346,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    CircleAvatar(
-                      backgroundImage: user.avatarUrl.isNotEmpty
-                          ? NetworkImage(user.avatarUrl)
-                          : null,
-                      child: user.avatarUrl.isEmpty
-                          ? const Icon(Icons.person)
-                          : null,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            user.displayName,
-                            style: theme.textTheme.titleMedium,
-                          ),
-                          Text(
-                            user.username.isNotEmpty
-                                ? '@${user.username}'
-                                : 'Signed in',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                          if (user.quote.isNotEmpty)
-                            Text(
-                              user.quote,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodySmall,
-                            ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Call routing settings',
-                      onPressed: _editCallSettings,
-                      icon: const Icon(Icons.settings_ethernet_outlined),
-                    ),
-                    IconButton(
-                      tooltip: 'Edit profile',
-                      onPressed: _editProfile,
-                      icon: const Icon(Icons.edit_outlined),
-                    ),
-                    DropdownButtonHideUnderline(
-                      child: DropdownButton<PresenceStatus>(
-                        value: user.status,
-                        items: PresenceStatus.values
-                            .map(
-                              (PresenceStatus status) =>
-                                  DropdownMenuItem<PresenceStatus>(
-                                value: status,
-                                child: Text(status.name),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (PresenceStatus? value) {
-                          if (value != null) {
-                            _changeStatus(value);
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: selectedContact == null
-                        ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                'No contact selected',
-                                style: theme.textTheme.titleSmall,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Choose someone from the contact list to load your local conversation history.',
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                          )
-                        : Row(
-                            children: <Widget>[
-                              CircleAvatar(
-                                radius: 20,
-                                backgroundImage: selectedContact
-                                        .avatarUrl.isNotEmpty
-                                    ? NetworkImage(selectedContact.avatarUrl)
-                                    : null,
-                                child: selectedContact.avatarUrl.isEmpty
-                                    ? Text(
-                                        selectedContact
-                                            .displayName.characters.first
-                                            .toUpperCase(),
-                                      )
-                                    : null,
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: <Widget>[
-                                    Text(
-                                      selectedContact.displayName,
-                                      style: theme.textTheme.titleSmall,
-                                    ),
-                                    if (selectedContact
-                                        .quote.isNotEmpty) ...<Widget>[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        selectedContact.quote,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                    ],
-                                    const SizedBox(height: 4),
-                                    Row(
-                                      children: <Widget>[
-                                        _buildPresenceDot(
-                                            selectedContact.status),
-                                        const SizedBox(width: 8),
-                                        Flexible(
-                                          child: Text(
-                                            _contactStatusLabel(
-                                                selectedContact),
-                                            style: theme.textTheme.bodySmall,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Column(
-                                children: <Widget>[
-                                  if (_selectedConversationBackgroundUrl !=
-                                      null) ...<Widget>[
-                                    IconButton.filledTonal(
-                                      tooltip: 'Clear conversation background',
-                                      onPressed: _clearConversationBackground,
-                                      icon: const Icon(
-                                        Icons.wallpaper_outlined,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                  ],
-                                  IconButton.filledTonal(
-                                    tooltip: 'Start voice call',
-                                    onPressed:
-                                        _callService.state.isInProgress &&
-                                                _callService.state.peer?.id !=
-                                                    selectedContact.id
-                                            ? null
-                                            : () => _startCall(CallKind.audio),
-                                    icon: const Icon(Icons.call_outlined),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  IconButton.filledTonal(
-                                    tooltip: 'Start video call',
-                                    onPressed:
-                                        _callService.state.isInProgress &&
-                                                _callService.state.peer?.id !=
-                                                    selectedContact.id
-                                            ? null
-                                            : () => _startCall(CallKind.video),
-                                    icon: const Icon(Icons.videocam_outlined),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                  ),
-                ),
-                if (!_callService.state.isIdle) ...<Widget>[
-                  const SizedBox(height: 16),
-                  _buildCallPanel(),
-                ],
-                if (_messagingService.isRemoteTransportEnabled) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Messages sync through AWS while history is also cached locally on this computer.',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ],
-              ],
+          _buildDesktopConversationHeader(selectedContact),
+          if (!_callService.state.isIdle) ...<Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: _buildCallPanel(),
             ),
-          ),
+          ],
           const Divider(height: 1),
           Expanded(
             child: _buildConversationBody(

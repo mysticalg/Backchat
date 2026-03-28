@@ -84,6 +84,26 @@ jobs:
           }
           flutter build windows $buildArgs
 
+      - name: Sign Windows app executable
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ vars.WINDOWS_SIGN_PFX_BASE64 != '' && vars.WINDOWS_SIGN_PFX_BASE64 || secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ vars.WINDOWS_SIGN_PFX_PASSWORD != '' && vars.WINDOWS_SIGN_PFX_PASSWORD || secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGN_TIMESTAMP_URL != '' && vars.WINDOWS_SIGN_TIMESTAMP_URL || secrets.WINDOWS_SIGN_TIMESTAMP_URL }}
+        run: |
+          if (-not $env:WINDOWS_SIGN_PFX_BASE64) {
+            Write-Host "No Windows code-signing certificate configured; skipping Authenticode signing."
+            exit 0
+          }
+
+          if (-not $env:WINDOWS_SIGN_PFX_PASSWORD) {
+            throw "WINDOWS_SIGN_PFX_PASSWORD must be set when WINDOWS_SIGN_PFX_BASE64 is provided."
+          }
+
+          & ".\scripts\windows-code-sign.ps1" -Files @(
+            "build/windows/x64/runner/Release/backchat.exe"
+          )
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y
@@ -100,6 +120,27 @@ jobs:
             "/DMyBuildDir=$buildDir" `
             "/DMyOutputDir=$outputDir" `
             $issPath
+
+      - name: Sign Windows installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ vars.WINDOWS_SIGN_PFX_BASE64 != '' && vars.WINDOWS_SIGN_PFX_BASE64 || secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ vars.WINDOWS_SIGN_PFX_PASSWORD != '' && vars.WINDOWS_SIGN_PFX_PASSWORD || secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGN_TIMESTAMP_URL != '' && vars.WINDOWS_SIGN_TIMESTAMP_URL || secrets.WINDOWS_SIGN_TIMESTAMP_URL }}
+        run: |
+          if (-not $env:WINDOWS_SIGN_PFX_BASE64) {
+            Write-Host "No Windows code-signing certificate configured; skipping Authenticode signing."
+            exit 0
+          }
+
+          if (-not $env:WINDOWS_SIGN_PFX_PASSWORD) {
+            throw "WINDOWS_SIGN_PFX_PASSWORD must be set when WINDOWS_SIGN_PFX_BASE64 is provided."
+          }
+
+          $setupPath = "backchat-windows-x64-${{ needs.prepare-release.outputs.app_version }}-setup.exe"
+          & ".\scripts\windows-code-sign.ps1" -Files @(
+            $setupPath
+          )
 
       - name: Package Windows release
         shell: pwsh

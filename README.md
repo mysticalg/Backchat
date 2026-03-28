@@ -62,10 +62,35 @@ flutter build windows --release
 To package a proper Windows installer locally with Inno Setup:
 
 ```bash
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0+12 /DMyBuildDir="build\windows\x64\runner\Release" windows\installer\backchat.iss
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0+12 /DMyBuildDir="build\windows\x64\runner\Release" /DMyOutputDir="." windows\installer\backchat.iss
 ```
 
 The GitHub release workflow now publishes both a Windows installer EXE and a portable ZIP.
+
+To remove Windows' `Unknown publisher` warning on other machines, you must
+Authenticode-sign the app and installer with a trusted code-signing
+certificate. This repo now supports optional signing in GitHub Actions and
+locally:
+
+- `WINDOWS_SIGN_PFX_BASE64` - base64-encoded `.pfx` certificate
+- `WINDOWS_SIGN_PFX_PASSWORD` - password for that `.pfx`
+- Optional `WINDOWS_SIGN_TIMESTAMP_URL` - RFC 3161 timestamp URL
+
+If those variables are present, the Windows workflow signs both
+`backchat.exe` and the generated setup EXE. For a local build, export the same
+variables and run:
+
+```powershell
+.\scripts\windows-code-sign.ps1 -Files @(
+  "build/windows/x64/runner/Release/backchat.exe",
+  "backchat-windows-x64-0.1.0+12-setup.exe"
+)
+```
+
+A self-signed certificate is fine for private/internal testing, but it will
+still show as untrusted on other PCs. To clear the warning for normal users,
+use a certificate that chains to a public trusted root (or a service such as
+Trusted Signing).
 
 ### macOS (`.app`, `.dmg`)
 
@@ -146,6 +171,12 @@ To run it:
    - `macos-release`
    - `linux-release`
    - `android-release`
+
+Optional Windows signing secrets for that workflow:
+
+- `WINDOWS_SIGN_PFX_BASE64`
+- `WINDOWS_SIGN_PFX_PASSWORD`
+- Optional `WINDOWS_SIGN_TIMESTAMP_URL`
 
 ## GitHub Actions backend deploy
 
