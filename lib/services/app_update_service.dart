@@ -59,7 +59,9 @@ class AppUpdateCheckResult {
   final bool canAutoInstall;
   final bool shouldRetryOnResume;
 
-  Uri? get actionUrl => latestRelease?.downloadUrl ?? latestRelease?.releaseUrl;
+  Uri? get actionUrl => status == AppUpdateStatus.manualUpdateAvailable
+      ? latestRelease?.downloadUrl ?? latestRelease?.releaseUrl
+      : null;
 }
 
 typedef PackageInfoLoader = Future<PackageInfo> Function();
@@ -101,6 +103,12 @@ class AppUpdateService {
   final AndroidApkInstaller _androidApkInstaller;
   final AppUpdatePlatform _platform;
 
+  bool get _platformUsesDownloadableAssets =>
+      _platform == AppUpdatePlatform.android ||
+      _platform == AppUpdatePlatform.windows ||
+      _platform == AppUpdatePlatform.macos ||
+      _platform == AppUpdatePlatform.linux;
+
   Future<AppUpdateCheckResult> checkForStartupUpdate({
     bool startInstall = false,
   }) async {
@@ -128,6 +136,15 @@ class AppUpdateService {
       return AppUpdateCheckResult(
         status: AppUpdateStatus.unavailable,
         currentVersion: currentVersion,
+      );
+    }
+
+    if (_platformUsesDownloadableAssets && latestRelease.downloadUrl == null) {
+      return AppUpdateCheckResult(
+        status: AppUpdateStatus.unavailable,
+        currentVersion: currentVersion,
+        latestRelease: latestRelease,
+        message: _missingPlatformPackageMessage(latestRelease),
       );
     }
 
@@ -296,6 +313,21 @@ class AppUpdateService {
       releaseUrl: _tryParseUri(release['html_url']?.toString()),
       downloadUrl: _preferredDownloadUrl(release),
     );
+  }
+
+  String _missingPlatformPackageMessage(AppReleaseInfo latestRelease) {
+    final String versionLabel = latestRelease.version.trim();
+    final String releaseLabel = versionLabel.isEmpty
+        ? 'The latest Backchat release'
+        : 'Backchat $versionLabel';
+    final String packageLabel = switch (_platform) {
+      AppUpdatePlatform.android => 'an Android package',
+      AppUpdatePlatform.windows => 'a Windows package',
+      AppUpdatePlatform.macos => 'a macOS package',
+      AppUpdatePlatform.linux => 'a Linux package',
+      _ => 'a package for this platform',
+    };
+    return '$releaseLabel does not include $packageLabel yet.';
   }
 
   Uri? _preferredDownloadUrl(Map<String, dynamic> release) {

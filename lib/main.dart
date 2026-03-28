@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -69,6 +70,7 @@ enum _CallAudioCueMode {
 enum _SessionMenuAction {
   editProfile,
   callSettings,
+  help,
   setStatusOnline,
   setStatusBusy,
   setStatusOffline,
@@ -180,6 +182,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   String? _notifiedUpdateKey;
   String? _shownUpdateDialogKey;
   bool _isDraggingVisualMedia = false;
+  String _installedVersionLabel = '';
 
   SecretKey? _sharedSecret;
 
@@ -191,6 +194,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _callService.addListener(_handleCallServiceChanged);
     _bootstrapCrypto();
     _configureTrayIfDesktop();
+    unawaited(_loadInstalledVersionLabel());
     unawaited(_appNotificationService.cancelIncomingCallNotification());
     unawaited(_appNotificationService.cancelUpdateNotification());
     _loadRememberedAccounts(autofillSingleAccount: true);
@@ -439,6 +443,64 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _sharedSecret = await _encryptionService.deriveSharedSecret(
       localPrivateKey: localKeyPair,
       remotePublicKey: remotePublicKey,
+    );
+  }
+
+  Future<void> _loadInstalledVersionLabel() async {
+    try {
+      final PackageInfo packageInfo = await PackageInfo.fromPlatform();
+      final String nextVersionLabel = _formatInstalledVersion(packageInfo);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _installedVersionLabel = nextVersionLabel;
+      });
+    } catch (_) {
+      // Leave the version label empty if package metadata is unavailable.
+    }
+  }
+
+  String _formatInstalledVersion(PackageInfo packageInfo) {
+    final String version = packageInfo.version.trim();
+    final String buildNumber = packageInfo.buildNumber.trim();
+    if (version.isEmpty) {
+      return buildNumber;
+    }
+    if (buildNumber.isEmpty || version.endsWith('+$buildNumber')) {
+      return version;
+    }
+    return '$version+$buildNumber';
+  }
+
+  Future<void> _showHelpDialog() async {
+    final String versionLabel = _installedVersionLabel.trim();
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Help'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text('Backchat Messenger'),
+              const SizedBox(height: 8),
+              Text(
+                versionLabel.isEmpty
+                    ? 'Version unavailable'
+                    : 'Version $versionLabel',
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1390,6 +1452,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             case _SessionMenuAction.callSettings:
               _editCallSettings();
               return;
+            case _SessionMenuAction.help:
+              unawaited(_showHelpDialog());
+              return;
             case _SessionMenuAction.setStatusOnline:
               _changeStatus(PresenceStatus.online);
               return;
@@ -1419,6 +1484,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             child: ListTile(
               leading: Icon(Icons.settings_ethernet_outlined),
               title: Text('Call settings'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuDivider(),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.help,
+            child: ListTile(
+              leading: Icon(Icons.help_outline),
+              title: Text('Help'),
               contentPadding: EdgeInsets.zero,
             ),
           ),
@@ -2806,6 +2880,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                   icon: const Icon(Icons.mail),
                   label: const Text('Recover username'),
                 ),
+                if (_installedVersionLabel.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 24),
+                  Text(
+                    'Version $_installedVersionLabel',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ],
             ),
           ),

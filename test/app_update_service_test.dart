@@ -18,34 +18,50 @@ void main() {
   Map<String, dynamic> latestRelease({
     String? name,
     String tagName = 'v0.1.0-build.9',
+    bool includeWindowsInstaller = true,
+    bool includeWindowsZip = true,
+    bool includeMacos = true,
+    bool includeLinux = true,
+    bool includeAndroid = true,
   }) {
+    final List<Map<String, dynamic>> assets = <Map<String, dynamic>>[];
+    if (includeWindowsInstaller) {
+      assets.add(<String, dynamic>{
+        'name': 'backchat-windows-x64-0.1.0+9-setup.exe',
+        'browser_download_url':
+            'https://example.com/backchat-windows-setup.exe',
+      });
+    }
+    if (includeWindowsZip) {
+      assets.add(<String, dynamic>{
+        'name': 'backchat-windows-x64-0.1.0+9.zip',
+        'browser_download_url': 'https://example.com/backchat-windows.zip',
+      });
+    }
+    if (includeMacos) {
+      assets.add(<String, dynamic>{
+        'name': 'backchat-macos-0.1.0+9.zip',
+        'browser_download_url': 'https://example.com/backchat-macos.zip',
+      });
+    }
+    if (includeLinux) {
+      assets.add(<String, dynamic>{
+        'name': 'backchat-linux-x64-0.1.0+9.tar.gz',
+        'browser_download_url': 'https://example.com/backchat-linux.tar.gz',
+      });
+    }
+    if (includeAndroid) {
+      assets.add(<String, dynamic>{
+        'name': 'backchat-android-0.1.0+9.apk',
+        'browser_download_url': 'https://example.com/backchat-android.apk',
+      });
+    }
+
     return <String, dynamic>{
       'name': name ?? 'Backchat 0.1.0+9',
       'tag_name': tagName,
       'html_url': 'https://github.com/mysticalg/Backchat/releases/tag/$tagName',
-      'assets': <Map<String, dynamic>>[
-        <String, dynamic>{
-          'name': 'backchat-windows-x64-0.1.0+9-setup.exe',
-          'browser_download_url':
-              'https://example.com/backchat-windows-setup.exe',
-        },
-        <String, dynamic>{
-          'name': 'backchat-windows-x64-0.1.0+9.zip',
-          'browser_download_url': 'https://example.com/backchat-windows.zip',
-        },
-        <String, dynamic>{
-          'name': 'backchat-macos-0.1.0+9.zip',
-          'browser_download_url': 'https://example.com/backchat-macos.zip',
-        },
-        <String, dynamic>{
-          'name': 'backchat-linux-x64-0.1.0+9.tar.gz',
-          'browser_download_url': 'https://example.com/backchat-linux.tar.gz',
-        },
-        <String, dynamic>{
-          'name': 'backchat-android-0.1.0+9.apk',
-          'browser_download_url': 'https://example.com/backchat-android.apk',
-        },
-      ],
+      'assets': assets,
     };
   }
 
@@ -156,6 +172,25 @@ void main() {
     expect(
       requestedUrl,
       Uri.parse('https://example.com/backchat-android.apk'),
+    );
+  });
+
+  test('does not offer a sideloaded Android update when the latest release has no APK',
+      () async {
+    final AppUpdateService service = AppUpdateService(
+      packageInfoLoader: () async => packageInfo(),
+      latestReleaseFetcher: () async => latestRelease(includeAndroid: false),
+      platform: AppUpdatePlatform.android,
+    );
+
+    final AppUpdateCheckResult result = await service.checkForStartupUpdate();
+
+    expect(result.status, AppUpdateStatus.unavailable);
+    expect(result.canAutoInstall, isFalse);
+    expect(result.actionUrl, isNull);
+    expect(
+      result.message,
+      'Backchat 0.1.0+9 does not include an Android package yet.',
     );
   });
 

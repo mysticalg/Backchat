@@ -178,6 +178,10 @@ Optional Windows signing secrets for that workflow:
 - `WINDOWS_SIGN_PFX_PASSWORD`
 - Optional `WINDOWS_SIGN_TIMESTAMP_URL`
 
+GitHub Releases are only updated when all four platform builds are enabled and
+pass in the same workflow run. This keeps the latest tagged release complete so
+in-app updates can always find the right package for each platform.
+
 ## GitHub Actions backend deploy
 
 This repo includes an Elastic Beanstalk deploy workflow at `.github/workflows/deploy-backend-api.yml` for pushing `backend/api/*` live.
