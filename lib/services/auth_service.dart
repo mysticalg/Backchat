@@ -23,6 +23,23 @@ typedef BrowserProcessLauncher = Future<bool> Function(
   List<String> arguments,
 );
 
+class SocialOAuthLaunchException implements Exception {
+  const SocialOAuthLaunchException({
+    required this.provider,
+    required this.authorizationUri,
+  });
+
+  final String provider;
+  final Uri authorizationUri;
+
+  String get message =>
+      'Could not open browser for ${provider[0].toUpperCase()}${provider.substring(1)} sign-in.';
+
+  @override
+  String toString() =>
+      'SocialOAuthLaunchException(provider: $provider, authorizationUri: $authorizationUri)';
+}
+
 enum UsernameSignInStatus {
   signedIn,
   created,
@@ -833,10 +850,9 @@ class AuthService {
     final Uri uri = Uri.parse(start.authorizationUrl);
     final bool launched = await _launchBrowser(uri);
     if (!launched) {
-      await _clearPendingOAuthSession();
-      throw const BackchatApiException(
-        status: 'oauth_launch_failed',
-        message: 'Could not open browser for OAuth.',
+      throw SocialOAuthLaunchException(
+        provider: provider,
+        authorizationUri: uri,
       );
     }
 
@@ -950,10 +966,19 @@ class AuthService {
   Future<bool> _launchBrowser(Uri uri) async {
     switch (_browserPlatform) {
       case BrowserLaunchPlatform.windows:
+        if (await _urlLauncher(uri, LaunchMode.externalApplication)) {
+          return true;
+        }
+        if (await _processLauncher('rundll32.exe', <String>[
+          'url.dll,FileProtocolHandler',
+          uri.toString(),
+        ])) {
+          return true;
+        }
         if (await _processLauncher('explorer.exe', <String>[uri.toString()])) {
           return true;
         }
-        break;
+        return false;
       case BrowserLaunchPlatform.macos:
         if (await _processLauncher('open', <String>[uri.toString()])) {
           return true;

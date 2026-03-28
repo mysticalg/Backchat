@@ -662,33 +662,7 @@ void main() {
     expect(prefs.getString('pending_oauth_state_v1'), isNull);
   });
 
-  test('social auth uses desktop process launcher on Windows first', () async {
-    String? launchedExecutable;
-    List<String>? launchedArguments;
-
-    final AuthService authService = AuthService(
-      apiService: _SuccessfulSocialOAuthApiClient(),
-      browserPlatform: BrowserLaunchPlatform.windows,
-      processLauncher: (String executable, List<String> arguments) async {
-        launchedExecutable = executable;
-        launchedArguments = arguments;
-        return true;
-      },
-      urlLauncher: (Uri uri, LaunchMode mode) async {
-        fail(
-            'url_launcher fallback should not run when process launch succeeds');
-      },
-    );
-
-    final AppUser? user = await authService.signInWithGoogle();
-
-    expect(user?.displayName, 'social_user');
-    expect(launchedExecutable, 'explorer.exe');
-    expect(launchedArguments, <String>['https://example.com/oauth/start']);
-  });
-
-  test('social auth falls back to url_launcher when process launch fails',
-      () async {
+  test('social auth uses url launcher first on Windows', () async {
     Uri? launchedUri;
     LaunchMode? launchedMode;
 
@@ -696,7 +670,7 @@ void main() {
       apiService: _SuccessfulSocialOAuthApiClient(),
       browserPlatform: BrowserLaunchPlatform.windows,
       processLauncher: (String executable, List<String> arguments) async {
-        return false;
+        fail('Windows process fallback should not run when url launcher works');
       },
       urlLauncher: (Uri uri, LaunchMode mode) async {
         launchedUri = uri;
@@ -710,5 +684,69 @@ void main() {
     expect(user?.displayName, 'social_user');
     expect(launchedUri, Uri.parse('https://example.com/oauth/start'));
     expect(launchedMode, LaunchMode.externalApplication);
+  });
+
+  test('social auth falls back to Windows process launchers when needed',
+      () async {
+    final List<String> launchedExecutables = <String>[];
+    final List<List<String>> launchedArguments = <List<String>>[];
+
+    final AuthService authService = AuthService(
+      apiService: _SuccessfulSocialOAuthApiClient(),
+      browserPlatform: BrowserLaunchPlatform.windows,
+      processLauncher: (String executable, List<String> arguments) async {
+        launchedExecutables.add(executable);
+        launchedArguments.add(arguments);
+        return executable == 'explorer.exe';
+      },
+      urlLauncher: (Uri uri, LaunchMode mode) async {
+        return false;
+      },
+    );
+
+    final AppUser? user = await authService.signInWithGoogle();
+
+    expect(user?.displayName, 'social_user');
+    expect(
+      launchedExecutables,
+      <String>['rundll32.exe', 'explorer.exe'],
+    );
+    expect(
+      launchedArguments,
+      <List<String>>[
+        <String>[
+          'url.dll,FileProtocolHandler',
+          'https://example.com/oauth/start',
+        ],
+        <String>['https://example.com/oauth/start'],
+      ],
+    );
+  });
+
+  test('social auth keeps pending state when Windows browser launch fails',
+      () async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final AuthService authService = AuthService(
+      apiService: _SuccessfulSocialOAuthApiClient(),
+      browserPlatform: BrowserLaunchPlatform.windows,
+      processLauncher: (String executable, List<String> arguments) async {
+        return false;
+      },
+      urlLauncher: (Uri uri, LaunchMode mode) async {
+        return false;
+      },
+    );
+
+    try {
+      await authService.signInWithGoogle();
+      fail('Expected SocialOAuthLaunchException to be thrown');
+    } on SocialOAuthLaunchException catch (e) {
+      expect(e.provider, 'google');
+      expect(e.authorizationUri, Uri.parse('https://example.com/oauth/start'));
+    }
+
+    expect(prefs.getString('pending_oauth_provider_v1'), 'google');
+    expect(prefs.getString('pending_oauth_state_v1'), 'test-state');
+    expect(prefs.getInt('pending_oauth_started_at_v1'), isNotNull);
   });
 }
