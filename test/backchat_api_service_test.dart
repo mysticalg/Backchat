@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:backchat/services/backchat_api_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,5 +70,94 @@ void main() {
       authHeaders,
       <String?>['Bearer token-previous-user', 'Bearer token-funkymonk'],
     );
+  });
+
+  test('uploads media in JSON chunks for cloudfront-hosted api uploads',
+      () async {
+    final List<String> modes = <String>[];
+    final List<int> chunkLengths = <int>[];
+    final MockClient client = MockClient((http.Request request) async {
+      if (!request.url.path.endsWith('/upload_media.php')) {
+        throw StateError('Unexpected request to ${request.url}');
+      }
+
+      expect(request.headers['authorization'], 'Bearer token-media');
+      final Map<String, dynamic> body =
+          jsonDecode(request.body) as Map<String, dynamic>;
+      final String mode = body['mode']?.toString() ?? '';
+      modes.add(mode);
+
+      switch (mode) {
+        case 'chunked_start':
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'ok': true,
+              'status': 'chunked_upload_started',
+              'upload': <String, dynamic>{
+                'token': 'upload-123',
+                'maxChunkBytes': 4096,
+              },
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        case 'chunked_append':
+          final String encodedChunk = body['chunkBase64']?.toString() ?? '';
+          chunkLengths.add(base64Decode(encodedChunk).length);
+          expect(body['uploadToken'], 'upload-123');
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'ok': true,
+              'status': 'chunked_upload_appended',
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        case 'chunked_finish':
+          expect(body['uploadToken'], 'upload-123');
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'ok': true,
+              'status': 'uploaded',
+              'media': <String, dynamic>{
+                'url': 'https://example.com/media.gif',
+                'mimeType': 'image/gif',
+                'kind': 'gif',
+                'sizeBytes': 9000,
+              },
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+      }
+
+      throw StateError('Unexpected upload mode: $mode');
+    });
+
+    final BackchatApiService service = BackchatApiService(client: client);
+    await service.clearToken();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('backchat_api_token_v1', 'token-media');
+    final UploadedMedia uploadedMedia = await service.uploadMedia(
+      bytes: Uint8List.fromList(List<int>.filled(9000, 1)),
+      mimeType: 'image/gif',
+      filename: 'party.gif',
+    );
+
+    expect(
+      modes,
+      <String>[
+        'chunked_start',
+        'chunked_append',
+        'chunked_append',
+        'chunked_append',
+        'chunked_finish',
+      ],
+    );
+    expect(chunkLengths, <int>[4096, 4096, 808]);
+    expect(uploadedMedia.url, 'https://example.com/media.gif');
+    expect(uploadedMedia.mimeType, 'image/gif');
+    expect(uploadedMedia.kind, 'gif');
+    expect(uploadedMedia.sizeBytes, 9000);
   });
 }

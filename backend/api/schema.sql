@@ -114,6 +114,35 @@ CREATE TABLE IF NOT EXISTS message_media (
     CONSTRAINT fk_message_media_owner_user FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS message_media_uploads (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    owner_user_id BIGINT UNSIGNED NOT NULL,
+    upload_token VARCHAR(64) NOT NULL,
+    declared_mime_type VARCHAR(64) NOT NULL,
+    original_name VARCHAR(255) NULL,
+    total_bytes INT UNSIGNED NOT NULL DEFAULT 0,
+    next_chunk_index INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_message_media_upload_token (upload_token),
+    KEY idx_message_media_upload_owner_updated (owner_user_id, updated_at),
+    CONSTRAINT fk_message_media_upload_owner_user FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS message_media_upload_chunks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    upload_id BIGINT UNSIGNED NOT NULL,
+    chunk_index INT UNSIGNED NOT NULL,
+    chunk_size SMALLINT UNSIGNED NOT NULL,
+    chunk_data BLOB NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_message_media_upload_chunk (upload_id, chunk_index),
+    KEY idx_message_media_upload_chunks_upload_id (upload_id),
+    CONSTRAINT fk_message_media_upload_chunk_upload FOREIGN KEY (upload_id) REFERENCES message_media_uploads(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS call_sessions (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     caller_user_id BIGINT UNSIGNED NOT NULL,

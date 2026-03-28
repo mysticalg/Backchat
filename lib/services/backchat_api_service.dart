@@ -167,6 +167,8 @@ class BackchatApiService implements BackchatApiClient {
   static const String _tokenStorageKey = 'backchat_api_token_v1';
   static const String _defaultApiBaseUrl =
       'https://d2axmspob6mqyx.cloudfront.net';
+  static const int _chunkedUploadMaxBytes = 4096;
+  static const int _preferChunkedUploadThresholdBytes = 4096;
   static const String _configuredApiBaseUrl =
       String.fromEnvironment('BACKCHAT_API_BASE_URL');
   static const Duration _requestTimeout = Duration(seconds: 8);
@@ -391,6 +393,37 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
 
+    if (_shouldPreferChunkedUpload(bytes.length)) {
+      return _uploadMediaInChunks(
+        bytes: bytes,
+        mimeType: mimeType,
+        filename: filename,
+      );
+    }
+
+    try {
+      return await _uploadMediaMultipart(
+        bytes: bytes,
+        mimeType: mimeType,
+        filename: filename,
+      );
+    } on BackchatApiException catch (e) {
+      if (_shouldRetryChunkedUpload(e)) {
+        return _uploadMediaInChunks(
+          bytes: bytes,
+          mimeType: mimeType,
+          filename: filename,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<UploadedMedia> _uploadMediaMultipart({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
     final Uri uri = Uri.parse('${_apiBaseUrl.trim()}/upload_media.php');
     final http.MultipartRequest request = http.MultipartRequest('POST', uri)
       ..headers.addAll(await _buildHeaders(requiresAuth: true))
@@ -436,6 +469,95 @@ class BackchatApiService implements BackchatApiClient {
     }
 
     final Object? mediaPayload = decoded['media'];
+    if (mediaPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload response is missing the media payload.',
+      );
+    }
+
+    final String url = mediaPayload['url']?.toString() ?? '';
+    final String resolvedMimeType = mediaPayload['mimeType']?.toString() ?? '';
+    final String kind = mediaPayload['kind']?.toString() ?? '';
+    final int sizeBytes = mediaPayload['sizeBytes'] is int
+        ? mediaPayload['sizeBytes'] as int
+        : int.tryParse(mediaPayload['sizeBytes']?.toString() ?? '') ?? 0;
+    if (url.isEmpty || resolvedMimeType.isEmpty || kind.isEmpty) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload response is missing fields.',
+      );
+    }
+
+    return UploadedMedia(
+      url: url,
+      mimeType: resolvedMimeType,
+      kind: kind,
+      sizeBytes: sizeBytes,
+    );
+  }
+
+  Future<UploadedMedia> _uploadMediaInChunks({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
+    final Map<String, dynamic> startPayload = await _postJson(
+      '/upload_media.php',
+      <String, dynamic>{
+        'mode': 'chunked_start',
+        'mimeType': mimeType.trim(),
+        if (filename != null && filename.trim().isNotEmpty)
+          'filename': filename.trim(),
+      },
+    );
+
+    final Object? uploadPayload = startPayload['upload'];
+    if (uploadPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload session did not start correctly.',
+      );
+    }
+
+    final String uploadToken = uploadPayload['token']?.toString() ?? '';
+    final int serverChunkBytes = uploadPayload['maxChunkBytes'] is int
+        ? uploadPayload['maxChunkBytes'] as int
+        : int.tryParse(uploadPayload['maxChunkBytes']?.toString() ?? '') ?? 0;
+    final int chunkBytes = serverChunkBytes > 0 && serverChunkBytes <= _chunkedUploadMaxBytes
+        ? serverChunkBytes
+        : _chunkedUploadMaxBytes;
+    if (uploadToken.isEmpty || chunkBytes <= 0) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload session did not provide chunk settings.',
+      );
+    }
+
+    for (int offset = 0; offset < bytes.length; offset += chunkBytes) {
+      final int end = offset + chunkBytes > bytes.length
+          ? bytes.length
+          : offset + chunkBytes;
+      final String chunkBase64 = base64Encode(bytes.sublist(offset, end));
+      await _postJson(
+        '/upload_media.php',
+        <String, dynamic>{
+          'mode': 'chunked_append',
+          'uploadToken': uploadToken,
+          'chunkBase64': chunkBase64,
+        },
+      );
+    }
+
+    final Map<String, dynamic> finishPayload = await _postJson(
+      '/upload_media.php',
+      <String, dynamic>{
+        'mode': 'chunked_finish',
+        'uploadToken': uploadToken,
+      },
+    );
+
+    final Object? mediaPayload = finishPayload['media'];
     if (mediaPayload is! Map<String, dynamic>) {
       throw const BackchatApiException(
         status: 'upload_invalid',
@@ -745,6 +867,19 @@ class BackchatApiService implements BackchatApiClient {
       _ => 'jpg',
     };
     return 'backchat-media.$extension';
+  }
+
+  bool _shouldPreferChunkedUpload(int byteLength) {
+    final String host = Uri.tryParse(_apiBaseUrl.trim())?.host.toLowerCase() ?? '';
+    return host.endsWith('cloudfront.net') &&
+        byteLength > _preferChunkedUploadThresholdBytes;
+  }
+
+  bool _shouldRetryChunkedUpload(BackchatApiException error) {
+    final String message = error.message.toLowerCase();
+    return error.status == 'invalid_api_response' &&
+        message.contains('returned html') &&
+        message.contains('/upload_media.php');
   }
 
   String _nonJsonApiResponseMessage(Uri uri, http.Response response) {
