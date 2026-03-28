@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:backchat/models/app_user.dart';
 import 'package:backchat/models/call_models.dart';
 import 'package:backchat/services/auth_service.dart';
@@ -65,6 +67,15 @@ class _DisabledApiClient implements BackchatApiClient {
     required String toUsername,
     required String cipherText,
     String? clientMessageId,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
   }) {
     throw UnimplementedError();
   }

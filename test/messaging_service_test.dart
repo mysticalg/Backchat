@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:backchat/models/app_user.dart';
 import 'package:backchat/models/call_models.dart';
 import 'package:backchat/models/chat_message.dart';
@@ -81,6 +83,15 @@ class _FakeApiClient implements BackchatApiClient {
       'cipherText': cipherText,
       'clientMessageId': clientMessageId,
     });
+  }
+
+  @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
+    throw UnimplementedError();
   }
 
   @override

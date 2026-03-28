@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -76,6 +77,20 @@ class PollMessagesResult {
   final List<ChatMessage> messages;
 }
 
+class UploadedMedia {
+  const UploadedMedia({
+    required this.url,
+    required this.mimeType,
+    required this.kind,
+    required this.sizeBytes,
+  });
+
+  final String url;
+  final String mimeType;
+  final String kind;
+  final int sizeBytes;
+}
+
 abstract class BackchatApiClient {
   bool get isConfigured;
 
@@ -108,6 +123,12 @@ abstract class BackchatApiClient {
     required String toUsername,
     required String cipherText,
     String? clientMessageId,
+  });
+
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
   });
 
   Future<CallServerConfig> fetchCallConfig();
@@ -149,9 +170,9 @@ class BackchatApiService implements BackchatApiClient {
   static const String _configuredApiBaseUrl =
       String.fromEnvironment('BACKCHAT_API_BASE_URL');
   static const Duration _requestTimeout = Duration(seconds: 8);
+  static String? _sharedCachedToken;
 
   final http.Client _client;
-  String? _cachedToken;
 
   String get _apiBaseUrl {
     final String configured = _configuredApiBaseUrl.trim();
@@ -352,6 +373,98 @@ class BackchatApiService implements BackchatApiClient {
   }
 
   @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
+    if (!isConfigured) {
+      throw const BackchatApiException(
+        status: 'api_not_configured',
+        message: 'BACKCHAT_API_BASE_URL is not configured.',
+      );
+    }
+    if (bytes.isEmpty) {
+      throw const BackchatApiException(
+        status: 'invalid_media',
+        message: 'That GIF or image could not be read.',
+      );
+    }
+
+    final Uri uri = Uri.parse('${_apiBaseUrl.trim()}/upload_media.php');
+    final http.MultipartRequest request = http.MultipartRequest('POST', uri)
+      ..headers.addAll(await _buildHeaders(requiresAuth: true))
+      ..fields['mimeType'] = mimeType.trim()
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          bytes,
+          filename: _normalizedFilename(filename, mimeType),
+        ),
+      );
+
+    if (filename != null && filename.trim().isNotEmpty) {
+      request.fields['filename'] = filename.trim();
+    }
+
+    late final http.Response response;
+    try {
+      final http.StreamedResponse streamed =
+          await _client.send(request).timeout(_requestTimeout);
+      response = await http.Response.fromStream(streamed).timeout(
+        _requestTimeout,
+      );
+    } on TimeoutException {
+      throw const BackchatApiException(
+        status: 'timeout',
+        message: 'API request timed out.',
+      );
+    } catch (_) {
+      throw const BackchatApiException(
+        status: 'network_error',
+        message: 'Could not connect to API.',
+      );
+    }
+
+    final Map<String, dynamic> decoded = _decodeJsonResponse(uri, response);
+    if (response.statusCode >= 400) {
+      throw BackchatApiException(
+        status: decoded['status']?.toString() ?? 'api_error',
+        message: decoded['message']?.toString() ?? 'API request failed.',
+        payload: decoded,
+      );
+    }
+
+    final Object? mediaPayload = decoded['media'];
+    if (mediaPayload is! Map<String, dynamic>) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload response is missing the media payload.',
+      );
+    }
+
+    final String url = mediaPayload['url']?.toString() ?? '';
+    final String resolvedMimeType = mediaPayload['mimeType']?.toString() ?? '';
+    final String kind = mediaPayload['kind']?.toString() ?? '';
+    final int sizeBytes = mediaPayload['sizeBytes'] is int
+        ? mediaPayload['sizeBytes'] as int
+        : int.tryParse(mediaPayload['sizeBytes']?.toString() ?? '') ?? 0;
+    if (url.isEmpty || resolvedMimeType.isEmpty || kind.isEmpty) {
+      throw const BackchatApiException(
+        status: 'upload_invalid',
+        message: 'Media upload response is missing fields.',
+      );
+    }
+
+    return UploadedMedia(
+      url: url,
+      mimeType: resolvedMimeType,
+      kind: kind,
+      sizeBytes: sizeBytes,
+    );
+  }
+
+  @override
   Future<CallServerConfig> fetchCallConfig() async {
     final Map<String, dynamic> payload = await _getJson('/call_config.php');
     final List<dynamic> rows = payload['iceServers'] is List<dynamic>
@@ -491,7 +604,7 @@ class BackchatApiService implements BackchatApiClient {
   Future<void> clearToken() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenStorageKey);
-    _cachedToken = null;
+    _sharedCachedToken = null;
   }
 
   Future<Map<String, dynamic>> _getJson(String path,
@@ -531,21 +644,10 @@ class BackchatApiService implements BackchatApiClient {
     }
 
     final Uri uri = Uri.parse('${_apiBaseUrl.trim()}$path');
-    final Map<String, String> headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
-
-    if (requiresAuth) {
-      final String? token = await _readToken();
-      if (token == null || token.isEmpty) {
-        throw const BackchatApiException(
-          status: 'unauthorized',
-          message: 'Missing auth token.',
-        );
-      }
-      headers['Authorization'] = 'Bearer $token';
-      headers['X-Auth-Token'] = token;
-    }
+    final Map<String, String> headers = await _buildHeaders(
+      requiresAuth: requiresAuth,
+      includeJsonContentType: true,
+    );
 
     late final http.Response response;
     try {
@@ -573,20 +675,7 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
 
-    Map<String, dynamic> decoded = <String, dynamic>{};
-    if (response.body.isNotEmpty) {
-      try {
-        final Object? parsed = jsonDecode(response.body);
-        if (parsed is Map<String, dynamic>) {
-          decoded = parsed;
-        }
-      } on FormatException {
-        throw BackchatApiException(
-          status: 'invalid_api_response',
-          message: _nonJsonApiResponseMessage(uri, response),
-        );
-      }
-    }
+    final Map<String, dynamic> decoded = _decodeJsonResponse(uri, response);
 
     if (response.statusCode >= 400) {
       throw BackchatApiException(
@@ -596,6 +685,66 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
     return decoded;
+  }
+
+  Future<Map<String, String>> _buildHeaders({
+    required bool requiresAuth,
+    bool includeJsonContentType = false,
+  }) async {
+    final Map<String, String> headers = <String, String>{};
+    if (includeJsonContentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    if (!requiresAuth) {
+      return headers;
+    }
+
+    final String? token = await _readToken();
+    if (token == null || token.isEmpty) {
+      throw const BackchatApiException(
+        status: 'unauthorized',
+        message: 'Missing auth token.',
+      );
+    }
+    headers['Authorization'] = 'Bearer $token';
+    headers['X-Auth-Token'] = token;
+    return headers;
+  }
+
+  Map<String, dynamic> _decodeJsonResponse(Uri uri, http.Response response) {
+    Map<String, dynamic> decoded = <String, dynamic>{};
+    if (response.body.isEmpty) {
+      return decoded;
+    }
+
+    try {
+      final Object? parsed = jsonDecode(response.body);
+      if (parsed is Map<String, dynamic>) {
+        decoded = parsed;
+      }
+      return decoded;
+    } on FormatException {
+      throw BackchatApiException(
+        status: 'invalid_api_response',
+        message: _nonJsonApiResponseMessage(uri, response),
+      );
+    }
+  }
+
+  String _normalizedFilename(String? filename, String mimeType) {
+    final String trimmed = filename?.trim() ?? '';
+    if (trimmed.isNotEmpty) {
+      return trimmed;
+    }
+
+    final String extension = switch (mimeType.trim().toLowerCase()) {
+      'image/gif' => 'gif',
+      'image/png' => 'png',
+      'image/webp' => 'webp',
+      _ => 'jpg',
+    };
+    return 'backchat-media.$extension';
   }
 
   String _nonJsonApiResponseMessage(Uri uri, http.Response response) {
@@ -628,14 +777,14 @@ class BackchatApiService implements BackchatApiClient {
   Future<void> _saveToken(String token) async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenStorageKey, token);
-    _cachedToken = token;
+    _sharedCachedToken = token;
   }
 
   Future<String?> _readToken() async {
-    if (_cachedToken != null) return _cachedToken;
+    if (_sharedCachedToken != null) return _sharedCachedToken;
     final SharedPreferences prefs = await SharedPreferences.getInstance();
-    _cachedToken = prefs.getString(_tokenStorageKey);
-    return _cachedToken;
+    _sharedCachedToken = prefs.getString(_tokenStorageKey);
+    return _sharedCachedToken;
   }
 
   AppUser _appUserFromApiMap(Map<String, dynamic> json) {

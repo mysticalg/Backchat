@@ -19,6 +19,9 @@ $stmt = bc_pdo()->prepare(
     'SELECT m.id, m.ciphertext, m.created_at, u.username AS from_username, u.normalized_username AS from_normalized_username
      FROM messages m
      INNER JOIN users u ON u.id = m.sender_user_id
+     INNER JOIN contacts c
+         ON c.user_id = m.recipient_user_id
+        AND c.contact_user_id = m.sender_user_id
      WHERE m.recipient_user_id = :recipient_user_id
        AND m.id > :since_id
      ORDER BY m.id ASC

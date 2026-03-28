@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:backchat/models/app_user.dart';
 import 'package:backchat/models/call_models.dart';
 import 'package:backchat/models/chat_message.dart';
@@ -75,6 +77,15 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
     required String toUsername,
     required String cipherText,
     String? clientMessageId,
+  }) async {
+    throw const BackchatApiException(status: 'api_error', message: 'offline');
+  }
+
+  @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
   }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -192,6 +203,15 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
     required String cipherText,
     String? clientMessageId,
   }) async {}
+
+  @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
+    throw UnimplementedError();
+  }
 
   @override
   Future<CallServerConfig> fetchCallConfig() async => const CallServerConfig();
@@ -352,6 +372,15 @@ class _SuccessfulUsernameApiClient implements BackchatApiClient {
     required String cipherText,
     String? clientMessageId,
   }) async {}
+
+  @override
+  Future<UploadedMedia> uploadMedia({
+    required Uint8List bytes,
+    required String mimeType,
+    String? filename,
+  }) async {
+    throw UnimplementedError();
+  }
 
   @override
   Future<CallServerConfig> fetchCallConfig() async => const CallServerConfig();

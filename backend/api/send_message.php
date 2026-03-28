@@ -19,21 +19,10 @@ if ($cipherText === '') {
 }
 
 $normalized = bc_normalize_username($toUsername);
-$findTarget = bc_pdo()->prepare(
-    'SELECT id, username, normalized_username
-     FROM users
-     WHERE normalized_username = :normalized_username
-     LIMIT 1'
-);
-$findTarget->execute([':normalized_username' => $normalized]);
-$recipient = $findTarget->fetch();
-
-if (!$recipient) {
-    bc_fail('not_found', 'Recipient username not found.', 404);
-}
-if ((int)$recipient['id'] === (int)$authUser['id']) {
+if ($normalized === (string)($authUser['normalized_username'] ?? '')) {
     bc_fail('invalid_recipient', 'Cannot send message to yourself.', 409);
 }
+$recipient = bc_find_contact_user_or_fail((int)$authUser['id'], $toUsername);
 
 $insert = bc_pdo()->prepare(
     'INSERT INTO messages (sender_user_id, recipient_user_id, ciphertext, client_message_id, created_at)

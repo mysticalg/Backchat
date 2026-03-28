@@ -98,6 +98,22 @@ CREATE TABLE IF NOT EXISTS messages (
     CONSTRAINT fk_messages_recipient_user FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS message_media (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    owner_user_id BIGINT UNSIGNED NOT NULL,
+    media_key VARCHAR(64) NOT NULL,
+    media_kind ENUM('image', 'gif') NOT NULL,
+    mime_type VARCHAR(64) NOT NULL,
+    original_name VARCHAR(255) NULL,
+    byte_size INT UNSIGNED NOT NULL,
+    blob_data MEDIUMBLOB NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_message_media_key (media_key),
+    KEY idx_message_media_owner_created (owner_user_id, created_at),
+    CONSTRAINT fk_message_media_owner_user FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS call_sessions (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     caller_user_id BIGINT UNSIGNED NOT NULL,

@@ -46,6 +46,23 @@ function bc_read_json_body(): array
     return $decoded;
 }
 
+function bc_ini_size_to_bytes(string $value): int
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return 0;
+    }
+
+    $suffix = strtolower(substr($trimmed, -1));
+    $number = (float)$trimmed;
+    return match ($suffix) {
+        'g' => (int)round($number * 1024 * 1024 * 1024),
+        'm' => (int)round($number * 1024 * 1024),
+        'k' => (int)round($number * 1024),
+        default => (int)round($number),
+    };
+}
+
 function bc_first_env(array $keys): ?string
 {
     foreach ($keys as $key) {
@@ -162,6 +179,34 @@ function bc_pdo(): PDO
     }
 }
 
+function bc_ensure_message_media_table(): void
+{
+    static $isReady = false;
+    if ($isReady) {
+        return;
+    }
+
+    bc_pdo()->exec(
+        "CREATE TABLE IF NOT EXISTS message_media (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            owner_user_id BIGINT UNSIGNED NOT NULL,
+            media_key VARCHAR(64) NOT NULL,
+            media_kind ENUM('image', 'gif') NOT NULL,
+            mime_type VARCHAR(64) NOT NULL,
+            original_name VARCHAR(255) NULL,
+            byte_size INT UNSIGNED NOT NULL,
+            blob_data MEDIUMBLOB NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uniq_message_media_key (media_key),
+            KEY idx_message_media_owner_created (owner_user_id, created_at),
+            CONSTRAINT fk_message_media_owner_user FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $isReady = true;
+}
+
 function bc_validate_username(string $username): bool
 {
     return preg_match('/^[a-zA-Z0-9_]{3,24}$/', $username) === 1;
@@ -253,6 +298,56 @@ function bc_base64url_encode(string $bytes): string
 function bc_secure_random_token(int $bytes = 32): string
 {
     return bc_base64url_encode(random_bytes($bytes));
+}
+
+function bc_request_scheme(): string
+{
+    $forwarded = trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
+    if ($forwarded !== '') {
+        return strtolower(explode(',', $forwarded, 2)[0]);
+    }
+
+    $https = strtolower((string)($_SERVER['HTTPS'] ?? ''));
+    if ($https !== '' && $https !== 'off') {
+        return 'https';
+    }
+
+    return 'http';
+}
+
+function bc_request_host(): string
+{
+    $forwardedHost = trim((string)($_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''));
+    if ($forwardedHost !== '') {
+        return trim(explode(',', $forwardedHost, 2)[0]);
+    }
+
+    $host = trim((string)($_SERVER['HTTP_HOST'] ?? ''));
+    if ($host !== '') {
+        return $host;
+    }
+
+    $serverName = trim((string)($_SERVER['SERVER_NAME'] ?? 'localhost'));
+    $port = (int)($_SERVER['SERVER_PORT'] ?? 0);
+    if ($port > 0 && !in_array($port, [80, 443], true)) {
+        return $serverName . ':' . $port;
+    }
+    return $serverName;
+}
+
+function bc_script_url(string $scriptName, array $query = []): string
+{
+    $scriptDir = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/')));
+    $basePath = rtrim($scriptDir, '/');
+    if ($basePath === '.' || $basePath === '/') {
+        $basePath = '';
+    }
+
+    $url = bc_request_scheme() . '://' . bc_request_host() . $basePath . '/' . ltrim($scriptName, '/');
+    if (!empty($query)) {
+        $url .= '?' . http_build_query($query);
+    }
+    return $url;
 }
 
 function bc_pkce_challenge_s256(string $verifier): string
@@ -680,24 +775,11 @@ function bc_find_or_create_user_for_oauth(string $provider, array $profile): arr
         return $linkedUser;
     }
 
-    $email = trim((string)($profile['email'] ?? ''));
-    if ($email !== '' && bc_validate_email($email)) {
-        $existingEmail = $pdo->prepare(
-            'SELECT id, username, normalized_username, recovery_email, avatar_url, quote_text
-             FROM users
-             WHERE LOWER(recovery_email) = :email
-             LIMIT 1'
-        );
-        $existingEmail->execute([':email' => strtolower($email)]);
-        $emailUser = $existingEmail->fetch();
-        if ($emailUser) {
-            return $emailUser;
-        }
-    }
-
+    // Recovery emails are not verified in this backend, so they are not safe
+    // enough to use for implicit account merges across sign-in methods.
     $username = bc_unique_username(bc_username_candidate_from_social($profile));
     $recoveryEmail = bc_unique_recovery_email(
-        $email,
+        trim((string)($profile['email'] ?? '')),
         $provider,
         (string)$profile['provider_user_id']
     );

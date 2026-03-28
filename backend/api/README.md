@@ -7,6 +7,7 @@ This folder contains a lightweight PHP + MySQL API for:
 - Invite by username
 - Contact sync
 - Basic encrypted message relay endpoints
+- GIF/image media upload and inline fetch endpoints
 - WebRTC call signaling for one-to-one voice/video calls
 
 ## Files
@@ -24,6 +25,8 @@ This folder contains a lightweight PHP + MySQL API for:
 - `contacts.php`
 - `send_message.php`
 - `poll_messages.php`
+- `upload_media.php`
+- `media.php`
 - `call_config.php`
 - `start_call.php`
 - `send_call_signal.php`
@@ -55,9 +58,10 @@ This folder contains a lightweight PHP + MySQL API for:
         - `BACKCHAT_CALL_TURN_URLS`
         - `BACKCHAT_CALL_TURN_USERNAME`
         - `BACKCHAT_CALL_TURN_CREDENTIAL`
-3. Call `POST /backchat-api/setup.php` with JSON:
+3. The deployment bundle can also include `.platform/php/conf.d/*.ini` files for PHP upload limits and runtime tuning.
+4. Call `POST /backchat-api/setup.php` with JSON:
    - `{"setupKey":"<your setup_key>"}`
-4. Use `health.php` to verify DB connectivity.
+5. Use `health.php` to verify DB connectivity.
 
 ## Deploy via GitHub Actions (optional)
 

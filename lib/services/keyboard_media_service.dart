@@ -1,10 +1,9 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/chat_message_content.dart';
+import 'media_attachment_service.dart';
 
 class KeyboardMediaException implements Exception {
   const KeyboardMediaException(this.message);
@@ -17,7 +16,7 @@ class KeyboardMediaException implements Exception {
 
 class KeyboardMediaService {
   static const MethodChannel _channel = MethodChannel('backchat/media_import');
-  static const int maxInlineBytes = 6 * 1024 * 1024;
+  static const int maxImportedBytes = MediaAttachmentService.maxAttachmentBytes;
   static const List<String> supportedMimeTypes = <String>[
     'image/gif',
     'image/png',
@@ -84,6 +83,18 @@ class KeyboardMediaService {
     }
   }
 
+  String? tryExtractDataUrlMimeType(String value) {
+    final String trimmed = value.trim();
+    final int markerIndex = trimmed.indexOf(';base64,');
+    if (!trimmed.toLowerCase().startsWith('data:') || markerIndex <= 5) {
+      return null;
+    }
+
+    final String mimeType = trimmed.substring(5, markerIndex);
+    final String normalized = _normalizeMimeType(mimeType);
+    return normalized.isEmpty ? null : normalized;
+  }
+
   Future<_ResolvedKeyboardMedia> _resolve(
       KeyboardInsertedContent content) async {
     final _PlatformKeyboardMediaPayload? platformPayload =
@@ -95,9 +106,9 @@ class KeyboardMediaService {
         'Could not read the GIF or image from your keyboard.',
       );
     }
-    if (bytes.length > maxInlineBytes) {
+    if (bytes.length > maxImportedBytes) {
       throw const KeyboardMediaException(
-        'That GIF or image is too large to send from the keyboard.',
+        'That GIF or image is too large to send. Try one under 8 MB or share a link instead.',
       );
     }
 

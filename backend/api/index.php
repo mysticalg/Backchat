@@ -19,5 +19,7 @@ bc_json([
         'invite' => '/invite_by_username.php',
         'sendMessage' => '/send_message.php',
         'pollMessages' => '/poll_messages.php',
+        'uploadMedia' => '/upload_media.php',
+        'media' => '/media.php?key=...',
     ],
 ]);

@@ -27,4 +27,13 @@ void main() {
     expect(service.isDataUrl(dataUrl), isTrue);
     expect(service.tryDecodeDataUrl(dataUrl), bytes);
   });
+
+  test('extracts mime types from keyboard media data urls', () {
+    final String dataUrl = service.buildDataUrl(
+      bytes: Uint8List.fromList(<int>[1, 2, 3]),
+      mimeType: 'image/jpg',
+    );
+
+    expect(service.tryExtractDataUrlMimeType(dataUrl), 'image/jpeg');
+  });
 }

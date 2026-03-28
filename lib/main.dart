@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,9 +23,11 @@ import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
 import 'services/call_service.dart';
 import 'services/conversation_background_service.dart';
+import 'services/conversation_session_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
 import 'services/keyboard_media_service.dart';
+import 'services/media_attachment_service.dart';
 import 'services/messaging_service.dart';
 
 void main() {
@@ -122,8 +125,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final AppWindowService _appWindowService = AppWindowService();
   final ConversationBackgroundService _conversationBackgroundService =
       ConversationBackgroundService();
+  final ConversationSessionService _conversationSessionService =
+      ConversationSessionService();
   final CallService _callService = CallService();
   final KeyboardMediaService _keyboardMediaService = KeyboardMediaService();
+  final MediaAttachmentService _mediaAttachmentService =
+      MediaAttachmentService();
   final BackchatApiClient _profileApi = BackchatApiService();
   final FocusNode _messageFocusNode = FocusNode();
   final ScrollController _conversationScrollController = ScrollController();
@@ -166,6 +173,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   AppUpdateCheckResult? _availableUpdate;
   String? _notifiedUpdateKey;
   String? _shownUpdateDialogKey;
+  bool _isDraggingVisualMedia = false;
 
   SecretKey? _sharedSecret;
 
@@ -258,6 +266,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         _contacts[contactIndex] = mergedContact;
         if (callState.isIncoming || callState.isInProgress) {
           _selectedContact = mergedContact;
+          unawaited(_rememberSelectedConversation(mergedContact));
         }
       }
     }
@@ -290,6 +299,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _selectedContact = null;
       _conversation.clear();
     });
+    unawaited(_rememberSelectedConversation(null));
   }
 
   Future<void> _signOutCurrentUser() async {
@@ -552,6 +562,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
     await _appNotificationService.requestPermissionIfNeeded();
     await _loadContacts();
+    await _restoreLastConversationSelection();
     _startMessagePolling();
     _startContactRefresh();
     await _syncMessages(showErrors: false);
@@ -871,11 +882,57 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
   Future<void> _selectContact(AppUser contact) async {
     setState(() => _selectedContact = contact);
+    await _rememberSelectedConversation(contact);
     await _loadSelectedConversationBackground();
     await _refreshConversation(scrollToBottom: true);
     if (mounted && !_useCompactChatLayout(context)) {
       _messageFocusNode.requestFocus();
     }
+  }
+
+  Future<void> _rememberSelectedConversation(AppUser? contact) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+    await _conversationSessionService.saveLastSelectedContactId(
+      currentUserId: currentUser.id,
+      contactUserId: contact?.id,
+    );
+  }
+
+  Future<void> _restoreLastConversationSelection() async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null || _contacts.isEmpty) {
+      return;
+    }
+
+    final String? lastSelectedContactId = await _conversationSessionService
+        .loadLastSelectedContactId(currentUserId: currentUser.id);
+    if (!mounted || _currentUser?.id != currentUser.id) {
+      return;
+    }
+    if (lastSelectedContactId == null || lastSelectedContactId.isEmpty) {
+      return;
+    }
+
+    final AppUser? restoredContact = _contacts.cast<AppUser?>().firstWhere(
+          (AppUser? contact) => contact?.id == lastSelectedContactId,
+          orElse: () => null,
+        );
+    if (restoredContact == null) {
+      await _conversationSessionService.saveLastSelectedContactId(
+        currentUserId: currentUser.id,
+        contactUserId: null,
+      );
+      return;
+    }
+
+    setState(() {
+      _selectedContact = restoredContact;
+    });
+    await _loadSelectedConversationBackground();
+    await _refreshConversation(scrollToBottom: true);
   }
 
   Future<void> _loadSelectedConversationBackground() async {
@@ -1937,6 +1994,69 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _messageController.clear();
   }
 
+  Future<ChatMessageContent> _prepareContentForSend(
+    ChatMessageContent content,
+  ) async {
+    if (!_messagingService.isRemoteTransportEnabled ||
+        (content.kind != ChatMessageContentKind.image &&
+            content.kind != ChatMessageContentKind.gif) ||
+        !content.hasUrl ||
+        !_keyboardMediaService.isDataUrl(content.url)) {
+      return content;
+    }
+
+    final Uint8List? bytes =
+        _keyboardMediaService.tryDecodeDataUrl(content.url);
+    final String? mimeType =
+        _keyboardMediaService.tryExtractDataUrlMimeType(content.url);
+    if (bytes == null ||
+        bytes.isEmpty ||
+        mimeType == null ||
+        mimeType.isEmpty) {
+      throw const BackchatApiException(
+        status: 'invalid_media',
+        message: 'That GIF or image could not be prepared for sending.',
+      );
+    }
+
+    final UploadedMedia uploadedMedia = await _profileApi.uploadMedia(
+      bytes: bytes,
+      mimeType: mimeType,
+      filename: _uploadFilenameForContent(
+        content: content,
+        mimeType: mimeType,
+      ),
+    );
+
+    return switch (content.kind) {
+      ChatMessageContentKind.gif => ChatMessageContent.gif(
+          url: uploadedMedia.url,
+          caption: content.text,
+        ),
+      ChatMessageContentKind.image => ChatMessageContent.image(
+          url: uploadedMedia.url,
+          caption: content.text,
+        ),
+      _ => content,
+    };
+  }
+
+  String _uploadFilenameForContent({
+    required ChatMessageContent content,
+    required String mimeType,
+  }) {
+    final String extension = switch (mimeType.trim().toLowerCase()) {
+      'image/gif' => 'gif',
+      'image/png' => 'png',
+      'image/webp' => 'webp',
+      _ => 'jpg',
+    };
+    final String prefix = content.kind == ChatMessageContentKind.gif
+        ? 'backchat-gif'
+        : 'backchat-image';
+    return '$prefix-${DateTime.now().toUtc().microsecondsSinceEpoch}.$extension';
+  }
+
   Future<void> _sendContentMessage(ChatMessageContent content) async {
     final AppUser? currentUser = _currentUser;
     final AppUser? selectedContact = _selectedContact;
@@ -1944,7 +2064,33 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
-    final String payload = content.toTransportPayload();
+    final ChatMessageContent preparedContent;
+    try {
+      preparedContent = await _prepareContentForSend(content);
+    } on BackchatApiException catch (e) {
+      _showAuthMessage(e.message);
+      return;
+    } catch (_) {
+      _showAuthMessage('Could not prepare that GIF or image right now.');
+      return;
+    }
+
+    final String payload = preparedContent.toTransportPayload();
+    final int payloadSize = utf8.encode(payload).length;
+    if (_messagingService.isRemoteTransportEnabled &&
+        payloadSize > (MediaAttachmentService.maxInlineBytes * 2)) {
+      _showAuthMessage(
+        'That image or GIF is too large to send directly. Pick a smaller file or share a link instead.',
+      );
+      return;
+    }
+    if (!_messagingService.isRemoteTransportEnabled &&
+        payloadSize > (MediaAttachmentService.maxInlineBytes * 2)) {
+      _showAuthMessage(
+        'That image or GIF is too large to send in offline mode. Sign in to the Backchat server or choose a smaller file.',
+      );
+      return;
+    }
 
     late final String cipherText;
     if (_messagingService.isRemoteTransportEnabled) {
@@ -2084,6 +2230,47 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _showAuthMessage(e.message);
     } catch (_) {
       _showAuthMessage('Could not send that GIF or image from the keyboard.');
+    }
+  }
+
+  Future<void> _pickAndSendSelectedMedia({
+    required bool gifsOnly,
+  }) async {
+    try {
+      final ChatMessageContent? content =
+          await _mediaAttachmentService.pickVisualMedia();
+      if (content == null) {
+        return;
+      }
+      if (gifsOnly && content.kind != ChatMessageContentKind.gif) {
+        _showAuthMessage('Choose a GIF file to send a GIF.');
+        return;
+      }
+      if (!gifsOnly && content.kind == ChatMessageContentKind.gif) {
+        _showAuthMessage(
+            'Choose a photo or image file here, or use GIF to send animations.');
+        return;
+      }
+      await _sendContentMessage(content);
+    } on MediaAttachmentException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage('Could not open that media file right now.');
+    }
+  }
+
+  Future<void> _sendDroppedVisualMedia(List<XFile> files) async {
+    if (files.isEmpty) {
+      return;
+    }
+    try {
+      final ChatMessageContent content =
+          await _mediaAttachmentService.contentFromFile(files.first);
+      await _sendContentMessage(content);
+    } on MediaAttachmentException catch (e) {
+      _showAuthMessage(e.message);
+    } catch (_) {
+      _showAuthMessage('Could not send that dropped image or GIF.');
     }
   }
 
@@ -2231,20 +2418,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         await _showStickerPicker();
         return;
       case _ComposerAttachmentAction.gif:
-        await _composeMediaMessage(
-          kind: ChatMessageContentKind.gif,
-          title: 'Send GIF',
-          urlHint: 'https://media.example.com/fun.gif',
-          captionLabel: 'Caption',
-        );
+        await _pickAndSendSelectedMedia(gifsOnly: true);
         return;
       case _ComposerAttachmentAction.image:
-        await _composeMediaMessage(
-          kind: ChatMessageContentKind.image,
-          title: 'Send image',
-          urlHint: 'https://example.com/photo.jpg',
-          captionLabel: 'Caption',
-        );
+        await _pickAndSendSelectedMedia(gifsOnly: false);
         return;
       case _ComposerAttachmentAction.background:
         await _composeMediaMessage(
@@ -3052,11 +3229,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Widget _buildConversationPane(AppUser user) {
     final AppUser? selectedContact = _selectedContact;
     final ThemeData theme = Theme.of(context);
-    return DecoratedBox(
+    final Widget conversationPane = DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: theme.colorScheme.outlineVariant),
+        border: Border.all(
+          color: _isDraggingVisualMedia
+              ? theme.colorScheme.primary
+              : theme.colorScheme.outlineVariant,
+          width: _isDraggingVisualMedia ? 2 : 1,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3274,6 +3456,77 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             selectedContact: selectedContact,
             compactLayout: false,
           ),
+        ],
+      ),
+    );
+
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return conversationPane;
+    }
+
+    return DropTarget(
+      onDragEntered: (_) {
+        if (_selectedContact == null) {
+          return;
+        }
+        setState(() {
+          _isDraggingVisualMedia = true;
+        });
+      },
+      onDragExited: (_) {
+        if (_isDraggingVisualMedia) {
+          setState(() {
+            _isDraggingVisualMedia = false;
+          });
+        }
+      },
+      onDragDone: (DropDoneDetails details) {
+        if (_isDraggingVisualMedia) {
+          setState(() {
+            _isDraggingVisualMedia = false;
+          });
+        }
+        if (_selectedContact == null) {
+          _showAuthMessage('Select a contact before dropping an image or GIF.');
+          return;
+        }
+        unawaited(_sendDroppedVisualMedia(details.files));
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          conversationPane,
+          if (_isDraggingVisualMedia)
+            IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Center(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: theme.colorScheme.primary),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 14,
+                      ),
+                      child: Text(
+                        'Drop an image or GIF to send it',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
