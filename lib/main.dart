@@ -26,9 +26,11 @@ import 'services/conversation_background_service.dart';
 import 'services/conversation_session_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
+import 'services/giphy_service.dart';
 import 'services/keyboard_media_service.dart';
 import 'services/media_attachment_service.dart';
 import 'services/messaging_service.dart';
+import 'widgets/giphy_picker_dialog.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -128,6 +130,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final ConversationSessionService _conversationSessionService =
       ConversationSessionService();
   final CallService _callService = CallService();
+  final GiphyService _giphyService = GiphyService();
   final KeyboardMediaService _keyboardMediaService = KeyboardMediaService();
   final MediaAttachmentService _mediaAttachmentService =
       MediaAttachmentService();
@@ -1650,6 +1653,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         return;
       }
       await _activateUserSession(user);
+    } on SocialOAuthLaunchException catch (e) {
+      final String launchUrl = e.authorizationUri.toString();
+      try {
+        await Clipboard.setData(ClipboardData(text: launchUrl));
+        _showAuthMessage(
+          '$providerLabel sign-in link copied to clipboard. Open it in your browser, finish sign-in, then return to Backchat.',
+        );
+      } catch (_) {
+        _showAuthMessage(
+          '$providerLabel sign-in could not open a browser automatically. Open this link manually: $launchUrl',
+        );
+      }
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
     } catch (_) {
@@ -2238,17 +2253,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }) async {
     try {
       final ChatMessageContent? content =
-          await _mediaAttachmentService.pickVisualMedia();
+          await _pickSelectedMediaContent(gifsOnly: gifsOnly);
       if (content == null) {
-        return;
-      }
-      if (gifsOnly && content.kind != ChatMessageContentKind.gif) {
-        _showAuthMessage('Choose a GIF file to send a GIF.');
-        return;
-      }
-      if (!gifsOnly && content.kind == ChatMessageContentKind.gif) {
-        _showAuthMessage(
-            'Choose a photo or image file here, or use GIF to send animations.');
         return;
       }
       await _sendContentMessage(content);
@@ -2256,6 +2262,52 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _showAuthMessage(e.message);
     } catch (_) {
       _showAuthMessage('Could not open that media file right now.');
+    }
+  }
+
+  Future<ChatMessageContent?> _pickSelectedMediaContent({
+    required bool gifsOnly,
+  }) async {
+    final ChatMessageContent? content =
+        await _mediaAttachmentService.pickVisualMedia();
+    if (content == null) {
+      return null;
+    }
+    if (gifsOnly && content.kind != ChatMessageContentKind.gif) {
+      throw const MediaAttachmentException('Choose a GIF file to send a GIF.');
+    }
+    if (!gifsOnly && content.kind == ChatMessageContentKind.gif) {
+      throw const MediaAttachmentException(
+        'Choose a photo or image file here, or use GIF to send animations.',
+      );
+    }
+    return content;
+  }
+
+  Future<void> _showGifPicker() async {
+    if (!_giphyService.isConfigured) {
+      await _pickAndSendSelectedMedia(gifsOnly: true);
+      return;
+    }
+
+    final GiphyPickerResult? result = await showDialog<GiphyPickerResult>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return GiphyPickerDialog(
+          giphyService: _giphyService,
+          languageCode: Localizations.localeOf(dialogContext).languageCode,
+        );
+      },
+    );
+    if (result == null) {
+      return;
+    }
+
+    switch (result) {
+      case GiphyPickedGifResult():
+        await _sendContentMessage(result.content);
+      case GiphyPickDeviceGifResult():
+        await _pickAndSendSelectedMedia(gifsOnly: true);
     }
   }
 
@@ -2418,7 +2470,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         await _showStickerPicker();
         return;
       case _ComposerAttachmentAction.gif:
-        await _pickAndSendSelectedMedia(gifsOnly: true);
+        await _showGifPicker();
         return;
       case _ComposerAttachmentAction.image:
         await _pickAndSendSelectedMedia(gifsOnly: false);

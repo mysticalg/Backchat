@@ -278,6 +278,16 @@ Run with:
 flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://d2axmspob6mqyx.cloudfront.net
 ```
 
+To enable the built-in GIPHY picker for the `GIF` button, also pass a GIPHY
+API key at build time:
+
+```bash
+flutter run -d windows --dart-define=BACKCHAT_API_BASE_URL=https://d2axmspob6mqyx.cloudfront.net --dart-define=BACKCHAT_GIPHY_API_KEY=your_giphy_api_key
+```
+
+GitHub release workflows will also include the picker when
+`BACKCHAT_GIPHY_API_KEY` is set as a repository variable or secret.
+
 Server files are in `backend/api/`.
 
 > Note: InfinityFree may inject a JavaScript anti-bot interstitial for direct

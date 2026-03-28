@@ -59,6 +59,7 @@ jobs:
     runs-on: windows-latest
     env:
       BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_GIPHY_API_KEY: ${{ vars.BACKCHAT_GIPHY_API_KEY != '' && vars.BACKCHAT_GIPHY_API_KEY || secrets.BACKCHAT_GIPHY_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,11 +75,14 @@ jobs:
       - name: Build Windows release
         shell: pwsh
         run: |
+          $buildArgs = @('--release')
           if ($env:BACKCHAT_API_BASE_URL) {
-            flutter build windows --release --dart-define="BACKCHAT_API_BASE_URL=$env:BACKCHAT_API_BASE_URL"
-          } else {
-            flutter build windows --release
+            $buildArgs += "--dart-define=BACKCHAT_API_BASE_URL=$env:BACKCHAT_API_BASE_URL"
           }
+          if ($env:BACKCHAT_GIPHY_API_KEY) {
+            $buildArgs += "--dart-define=BACKCHAT_GIPHY_API_KEY=$env:BACKCHAT_GIPHY_API_KEY"
+          }
+          flutter build windows $buildArgs
 
       - name: Install Inno Setup
         shell: pwsh
@@ -117,6 +121,7 @@ jobs:
     runs-on: macos-latest
     env:
       BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_GIPHY_API_KEY: ${{ vars.BACKCHAT_GIPHY_API_KEY != '' && vars.BACKCHAT_GIPHY_API_KEY || secrets.BACKCHAT_GIPHY_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,6 +141,9 @@ jobs:
           build_args=(--release)
           if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
             build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          if [ -n "${BACKCHAT_GIPHY_API_KEY:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_GIPHY_API_KEY=${BACKCHAT_GIPHY_API_KEY}")
           fi
           flutter build macos "${build_args[@]}"
 
@@ -158,6 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_GIPHY_API_KEY: ${{ vars.BACKCHAT_GIPHY_API_KEY != '' && vars.BACKCHAT_GIPHY_API_KEY || secrets.BACKCHAT_GIPHY_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -190,6 +199,9 @@ jobs:
           if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
             build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
           fi
+          if [ -n "${BACKCHAT_GIPHY_API_KEY:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_GIPHY_API_KEY=${BACKCHAT_GIPHY_API_KEY}")
+          fi
           flutter build linux "${build_args[@]}"
 
       - name: Package Linux release
@@ -211,6 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_GIPHY_API_KEY: ${{ vars.BACKCHAT_GIPHY_API_KEY != '' && vars.BACKCHAT_GIPHY_API_KEY || secrets.BACKCHAT_GIPHY_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -271,6 +284,9 @@ jobs:
           if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
             build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
           fi
+          if [ -n "${BACKCHAT_GIPHY_API_KEY:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_GIPHY_API_KEY=${BACKCHAT_GIPHY_API_KEY}")
+          fi
           flutter build apk "${build_args[@]}"
 
       - name: Build Android app bundle
@@ -280,6 +296,9 @@ jobs:
           build_args=(--release)
           if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
             build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          if [ -n "${BACKCHAT_GIPHY_API_KEY:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_GIPHY_API_KEY=${BACKCHAT_GIPHY_API_KEY}")
           fi
           flutter build appbundle "${build_args[@]}"
 

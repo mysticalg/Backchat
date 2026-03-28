@@ -34,6 +34,7 @@ jobs:
       contents: read
     env:
       BACKCHAT_API_BASE_URL: ${{ vars.BACKCHAT_API_BASE_URL != '' && vars.BACKCHAT_API_BASE_URL || secrets.BACKCHAT_API_BASE_URL }}
+      BACKCHAT_GIPHY_API_KEY: ${{ vars.BACKCHAT_GIPHY_API_KEY != '' && vars.BACKCHAT_GIPHY_API_KEY || secrets.BACKCHAT_GIPHY_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,6 +105,9 @@ jobs:
           build_args=(--release)
           if [ -n "${BACKCHAT_API_BASE_URL:-}" ]; then
             build_args+=(--dart-define="BACKCHAT_API_BASE_URL=${BACKCHAT_API_BASE_URL}")
+          fi
+          if [ -n "${BACKCHAT_GIPHY_API_KEY:-}" ]; then
+            build_args+=(--dart-define="BACKCHAT_GIPHY_API_KEY=${BACKCHAT_GIPHY_API_KEY}")
           fi
           flutter build appbundle "${build_args[@]}"
 
