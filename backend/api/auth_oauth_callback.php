@@ -11,8 +11,9 @@ function bc_oauth_callback_page(string $title, string $message): void
     $safeMessage = htmlspecialchars($message, ENT_QUOTES, 'UTF-8');
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . $safeTitle . '</title>';
-    echo '<style>body{font-family:Arial,sans-serif;padding:24px;background:#f6f8fb;color:#1f2937}.card{max-width:560px;margin:auto;background:white;border-radius:10px;padding:20px;box-shadow:0 6px 24px rgba(0,0,0,.08)}h1{margin-top:0;font-size:22px}</style>';
-    echo '</head><body><div class="card"><h1>' . $safeTitle . '</h1><p>' . $safeMessage . '</p><p>You can return to the Backchat app now.</p></div></body></html>';
+    echo '<style>body{font-family:Arial,sans-serif;padding:24px;background:#f6f8fb;color:#1f2937}.card{max-width:560px;margin:auto;background:white;border-radius:10px;padding:20px;box-shadow:0 6px 24px rgba(0,0,0,.08)}h1{margin-top:0;font-size:22px}.actions{margin-top:18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.button{display:inline-flex;align-items:center;justify-content:center;padding:10px 16px;border-radius:999px;background:#2563eb;color:#fff;text-decoration:none;border:none;font:inherit;cursor:pointer}.hint{font-size:14px;color:#6b7280}</style>';
+    echo '<script>(function(){function closeWindow(){try{window.open("","_self");}catch(_ignored){}try{window.close();}catch(_ignored){}}window.addEventListener("load",function(){setTimeout(closeWindow,350);setTimeout(function(){var fallback=document.getElementById("close-fallback");if(fallback){fallback.hidden=false;}},1200);});window.backchatCloseOAuthWindow=closeWindow;})();</script>';
+    echo '</head><body><div class="card"><h1>' . $safeTitle . '</h1><p>' . $safeMessage . '</p><p>This window should close automatically and return you to Backchat.</p><div class="actions"><button id="close-fallback" class="button" type="button" hidden onclick="window.backchatCloseOAuthWindow()">Close window</button><span class="hint">If it stays open, use the button above.</span></div></div></body></html>';
     exit;
 }
 
