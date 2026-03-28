@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -26,6 +27,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
@@ -50,6 +52,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        restorePendingApkDownloadState()
         createNotificationChannels()
 
         MethodChannel(
@@ -80,6 +83,19 @@ class MainActivity : FlutterActivity() {
             apkDownloadReceiverRegistered = false
         }
         super.onDestroy()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        restorePendingApkDownloadState()
+        ensureApkDownloadReceiverRegistered()
+        reconcilePendingApkDownload()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restorePendingApkDownloadState()
+        reconcilePendingApkDownload()
     }
 
     override fun onRequestPermissionsResult(
@@ -220,6 +236,8 @@ class MainActivity : FlutterActivity() {
         }
 
         ensureApkDownloadReceiverRegistered()
+        clearPendingApkDownload(downloadManager)
+        deleteStaleDownloadedApk()
 
         val request =
             DownloadManager.Request(android.net.Uri.parse(rawUrl))
@@ -231,7 +249,9 @@ class MainActivity : FlutterActivity() {
                         "Downloading Backchat $versionLabel."
                     },
                 )
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                .setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                )
                 .setMimeType(APK_MIME_TYPE)
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
@@ -243,6 +263,7 @@ class MainActivity : FlutterActivity() {
         )
 
         pendingApkDownloadId = downloadManager.enqueue(request)
+        persistPendingApkDownloadState(pendingApkDownloadId)
         result.success("started")
     }
 
@@ -423,13 +444,13 @@ class MainActivity : FlutterActivity() {
         val query = DownloadManager.Query().setFilterById(downloadId)
         downloadManager.query(query)?.use { cursor ->
             if (!cursor.moveToFirst()) {
-                pendingApkDownloadId = null
+                clearPendingApkDownloadState()
                 return
             }
 
             val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
             if (statusIndex == -1) {
-                pendingApkDownloadId = null
+                clearPendingApkDownloadState()
                 return
             }
 
@@ -438,20 +459,127 @@ class MainActivity : FlutterActivity() {
                 val downloadUri = downloadManager.getUriForDownloadedFile(downloadId)
                 if (downloadUri != null) {
                     promptApkInstall(downloadUri)
+                } else {
+                    showUpdateToast("Backchat finished downloading, but Android could not open the installer.")
                 }
+            } else if (status == DownloadManager.STATUS_FAILED) {
+                showUpdateToast(downloadFailureMessage(cursor))
             }
         }
-        pendingApkDownloadId = null
+        clearPendingApkDownloadState()
     }
 
     private fun promptApkInstall(downloadUri: android.net.Uri) {
-        val installIntent =
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(downloadUri, APK_MIME_TYPE)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            val installIntent =
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(downloadUri, APK_MIME_TYPE)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            startActivity(installIntent)
+        } catch (_: Exception) {
+            showUpdateToast("Backchat downloaded the update, but Android could not launch the installer.")
+        }
+    }
+
+    private fun reconcilePendingApkDownload() {
+        val downloadId = pendingApkDownloadId ?: return
+        val downloadManager = getSystemService(DownloadManager::class.java) ?: return
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        downloadManager.query(query)?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                clearPendingApkDownloadState()
+                return
             }
-        startActivity(installIntent)
+
+            val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+            if (statusIndex == -1) {
+                clearPendingApkDownloadState()
+                return
+            }
+
+            when (cursor.getInt(statusIndex)) {
+                DownloadManager.STATUS_SUCCESSFUL -> handleCompletedApkDownload(downloadId)
+                DownloadManager.STATUS_FAILED -> {
+                    showUpdateToast(downloadFailureMessage(cursor))
+                    clearPendingApkDownloadState()
+                }
+            }
+        }
+    }
+
+    private fun downloadFailureMessage(cursor: android.database.Cursor): String {
+        val reasonIndex = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
+        val reason = if (reasonIndex != -1) cursor.getInt(reasonIndex) else 0
+        return when (reason) {
+            DownloadManager.ERROR_CANNOT_RESUME ->
+                "Backchat could not resume the update download. Please try again."
+            DownloadManager.ERROR_DEVICE_NOT_FOUND ->
+                "Backchat could not access device storage for the update download."
+            DownloadManager.ERROR_FILE_ALREADY_EXISTS ->
+                "Backchat found an old update file. Please try the update again."
+            DownloadManager.ERROR_FILE_ERROR ->
+                "Backchat could not write the update file to storage."
+            DownloadManager.ERROR_HTTP_DATA_ERROR ->
+                "Backchat hit a network error while downloading the update."
+            DownloadManager.ERROR_INSUFFICIENT_SPACE ->
+                "There is not enough free space to download the Backchat update."
+            DownloadManager.ERROR_TOO_MANY_REDIRECTS ->
+                "The update download redirected too many times."
+            DownloadManager.ERROR_UNHANDLED_HTTP_CODE ->
+                "The update server returned an unexpected response."
+            DownloadManager.ERROR_UNKNOWN ->
+                "Android could not finish downloading the Backchat update."
+            else -> "Backchat could not finish downloading the update."
+        }
+    }
+
+    private fun clearPendingApkDownload(downloadManager: DownloadManager) {
+        pendingApkDownloadId?.let { activeDownloadId ->
+            runCatching {
+                downloadManager.remove(activeDownloadId)
+            }
+        }
+        clearPendingApkDownloadState()
+    }
+
+    private fun restorePendingApkDownloadState() {
+        val savedDownloadId = updatePrefs().getLong(PENDING_APK_DOWNLOAD_ID_KEY, -1L)
+        pendingApkDownloadId = savedDownloadId.takeIf { it > 0L }
+    }
+
+    private fun persistPendingApkDownloadState(downloadId: Long?) {
+        val prefs = updatePrefs().edit()
+        if (downloadId == null || downloadId <= 0L) {
+            prefs.remove(PENDING_APK_DOWNLOAD_ID_KEY)
+        } else {
+            prefs.putLong(PENDING_APK_DOWNLOAD_ID_KEY, downloadId)
+        }
+        prefs.apply()
+    }
+
+    private fun clearPendingApkDownloadState() {
+        pendingApkDownloadId = null
+        persistPendingApkDownloadState(null)
+    }
+
+    private fun deleteStaleDownloadedApk() {
+        val apkFile = downloadedApkFile() ?: return
+        if (apkFile.exists()) {
+            apkFile.delete()
+        }
+    }
+
+    private fun downloadedApkFile(): File? {
+        val downloadsDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
+        return File(downloadsDir, "backchat-update.apk")
+    }
+
+    private fun updatePrefs() = getSharedPreferences(UPDATE_PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun showUpdateToast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     private fun notificationsAllowed(): Boolean {
@@ -557,5 +685,7 @@ class MainActivity : FlutterActivity() {
         private const val UPDATE_NOTIFICATION_ID = 640003
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 640002
         private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+        private const val UPDATE_PREFS_NAME = "backchat_updates"
+        private const val PENDING_APK_DOWNLOAD_ID_KEY = "pending_apk_download_id_v1"
     }
 }

@@ -707,6 +707,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           if (result.message.isNotEmpty) {
             _showAuthMessage(result.message);
           }
+          if (!kIsWeb && Platform.isAndroid && kDebugMode) {
+            _showAuthMessage(
+              'This Android install is a debug build. If the installer refuses the update, uninstall the dev build first and then install the GitHub release.',
+            );
+          }
           break;
         case AppUpdateStatus.installerPermissionRequired:
           if (result.message.isNotEmpty) {
