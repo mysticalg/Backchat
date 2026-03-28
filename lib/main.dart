@@ -1364,6 +1364,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     final List<Widget> actions = <Widget>[];
     if (showingMobileConversation && selectedContact != null) {
       actions.addAll(_buildMobileConversationAppBarActions(selectedContact));
+      if (_selectedConversationBackgroundUrl != null) {
+        actions.add(
+          IconButton(
+            tooltip: 'Clear conversation background',
+            onPressed: _clearConversationBackground,
+            icon: const Icon(Icons.wallpaper_outlined),
+          ),
+        );
+      }
     }
 
     actions.add(
@@ -2885,25 +2894,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-            child: _buildCompactContactBanner(selectedContact),
-          ),
           if (!_callService.state.isIdle) ...<Widget>[
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
               child: _buildCallPanel(compactLayout: true),
             ),
-            const SizedBox(height: 12),
-          ],
-          if (_messagingService.isRemoteTransportEnabled)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(
-                'Messages sync through AWS while history is also cached locally on this device.',
-                style: theme.textTheme.bodySmall,
-              ),
-            ),
+          ] else
+            const SizedBox(height: 8),
           const Divider(height: 1),
           Expanded(
             child: _buildConversationBody(
@@ -3026,65 +3023,6 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildCompactContactBanner(AppUser contact) {
-    final ThemeData theme = Theme.of(context);
-    return Row(
-      children: <Widget>[
-        CircleAvatar(
-          radius: 22,
-          backgroundImage: contact.avatarUrl.isNotEmpty
-              ? NetworkImage(contact.avatarUrl)
-              : null,
-          child: contact.avatarUrl.isEmpty
-              ? Text(contact.displayName.characters.first.toUpperCase())
-              : null,
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                contact.displayName,
-                style: theme.textTheme.titleMedium,
-              ),
-              if (contact.quote.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 2),
-                Text(
-                  contact.quote,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall,
-                ),
-              ],
-              const SizedBox(height: 4),
-              Row(
-                children: <Widget>[
-                  _buildPresenceDot(contact.status),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _contactStatusLabel(contact),
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        if (_selectedConversationBackgroundUrl != null) ...<Widget>[
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: 'Clear conversation background',
-            onPressed: _clearConversationBackground,
-            icon: const Icon(Icons.wallpaper_outlined),
-          ),
-        ],
-      ],
     );
   }
 
