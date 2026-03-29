@@ -385,6 +385,14 @@ h1 {
   margin-top: 16px;
 }
 
+.download-version {
+  align-self: center;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+}
+
 .section--muted {
   position: relative;
 }

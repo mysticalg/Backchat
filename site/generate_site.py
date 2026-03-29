@@ -134,8 +134,25 @@ def format_timestamp(raw_value: str) -> str:
     return dt.astimezone(timezone.utc).strftime("%B %d, %Y")
 
 
+def release_version_label(release: dict) -> str:
+    release_name = (release.get("name") or "").strip()
+    if release_name.lower().startswith("backchat "):
+        return release_name[len("Backchat ") :].strip()
+
+    release_tag = (release.get("tag_name") or "").strip()
+    if release_tag.startswith("v") and "-build." in release_tag:
+        return release_tag[1:].replace("-build.", "+", 1)
+
+    if release_name:
+        return release_name
+    if release_tag:
+        return release_tag
+    return "Latest"
+
+
 def build_download_cards(release: dict) -> str:
     assets_by_label = asset_map(release)
+    version_label = release_version_label(release)
     cards: list[str] = []
     for platform in PLATFORM_CONFIG:
         asset = assets_by_label.get(platform["label"])
@@ -172,6 +189,7 @@ def build_download_cards(release: dict) -> str:
                 <a class="button" href="{html.escape(asset["browser_download_url"])}">{
                     html.escape(platform["cta"])
                 }</a>
+                <span class="download-version">Version {html.escape(version_label)}</span>
                 <a class="text-link" href="{html.escape(release["html_url"])}">View release notes</a>
               </div>
             </article>
