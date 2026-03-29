@@ -76,7 +76,7 @@ class MessagingService {
   Future<void> send(ChatMessage message) async {
     await _ensureLoaded(message.fromUserId);
 
-    if (_apiService.isConfigured) {
+    if (_apiService.isConfigured && !message.isLocalOnly) {
       await _apiService.sendMessage(
         toUsername: _usernameFromUserId(message.toUserId),
         cipherText: message.cipherText,
@@ -85,6 +85,15 @@ class MessagingService {
     }
 
     _rememberMessage(message.copyWith(isRead: true));
+    await _persistState();
+  }
+
+  Future<void> storeLocalOnly({
+    required String currentUserId,
+    required ChatMessage message,
+  }) async {
+    await _ensureLoaded(currentUserId);
+    _rememberMessage(message);
     await _persistState();
   }
 
@@ -120,7 +129,9 @@ class MessagingService {
         .where(
           (ChatMessage message) =>
               (message.fromUserId == userA && message.toUserId == userB) ||
-              (message.fromUserId == userB && message.toUserId == userA),
+              (message.fromUserId == userB && message.toUserId == userA) ||
+              (message.threadContactId == userB &&
+                  (message.fromUserId == userA || message.toUserId == userA)),
         )
         .toList()
       ..sort((ChatMessage a, ChatMessage b) => a.sentAt.compareTo(b.sentAt));

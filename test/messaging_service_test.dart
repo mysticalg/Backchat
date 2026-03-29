@@ -246,4 +246,48 @@ void main() {
       0,
     );
   });
+
+  test('stores local thread-only model messages inside the selected chat',
+      () async {
+    final MessagingService service = MessagingService(
+      apiService: _FakeApiClient(),
+    );
+    final DateTime sentAt = DateTime.parse('2026-03-29T12:00:00Z').toLocal();
+
+    await service.activateForUser(aliceId);
+    await service.storeLocalOnly(
+      currentUserId: aliceId,
+      message: ChatMessage(
+        localId: 'local-thread:1',
+        fromUserId: 'llm:ollama',
+        toUserId: aliceId,
+        cipherText: 'reply',
+        sentAt: sentAt,
+        isRead: true,
+        threadContactId: bobId,
+        senderLabel: '@ollama',
+        isLocalOnly: true,
+      ),
+    );
+
+    final List<ChatMessage> threadMessages = await service.listForPair(
+      aliceId,
+      bobId,
+    );
+    expect(threadMessages, hasLength(1));
+    expect(threadMessages.single.senderLabel, '@ollama');
+    expect(threadMessages.single.threadContactId, bobId);
+
+    final MessagingService restored = MessagingService(
+      apiService: _FakeApiClient(),
+    );
+    await restored.activateForUser(aliceId);
+    final List<ChatMessage> restoredMessages = await restored.listForPair(
+      aliceId,
+      bobId,
+    );
+    expect(restoredMessages, hasLength(1));
+    expect(restoredMessages.single.isLocalOnly, isTrue);
+    expect(restoredMessages.single.senderLabel, '@ollama');
+  });
 }

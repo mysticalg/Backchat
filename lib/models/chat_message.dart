@@ -7,6 +7,9 @@ class ChatMessage {
     required this.sentAt,
     this.remoteId,
     this.isRead = false,
+    this.threadContactId = '',
+    this.senderLabel = '',
+    this.isLocalOnly = false,
   });
 
   final String localId;
@@ -16,6 +19,9 @@ class ChatMessage {
   final DateTime sentAt;
   final int? remoteId;
   final bool isRead;
+  final String threadContactId;
+  final String senderLabel;
+  final bool isLocalOnly;
 
   bool isIncomingFor(String currentUserId) => toUserId == currentUserId;
 
@@ -27,6 +33,9 @@ class ChatMessage {
     String? localId,
     int? remoteId,
     bool? isRead,
+    String? threadContactId,
+    String? senderLabel,
+    bool? isLocalOnly,
   }) {
     return ChatMessage(
       localId: localId ?? this.localId,
@@ -36,6 +45,9 @@ class ChatMessage {
       sentAt: sentAt,
       remoteId: remoteId ?? this.remoteId,
       isRead: isRead ?? this.isRead,
+      threadContactId: threadContactId ?? this.threadContactId,
+      senderLabel: senderLabel ?? this.senderLabel,
+      isLocalOnly: isLocalOnly ?? this.isLocalOnly,
     );
   }
 
@@ -48,6 +60,9 @@ class ChatMessage {
       'sentAtUtc': sentAt.toUtc().toIso8601String(),
       'remoteId': remoteId,
       'isRead': isRead,
+      if (threadContactId.isNotEmpty) 'threadContactId': threadContactId,
+      if (senderLabel.isNotEmpty) 'senderLabel': senderLabel,
+      if (isLocalOnly) 'isLocalOnly': isLocalOnly,
     };
   }
 
@@ -65,6 +80,9 @@ class ChatMessage {
           ? remoteIdValue
           : int.tryParse(remoteIdValue?.toString() ?? ''),
       isRead: json['isRead'] == true,
+      threadContactId: json['threadContactId']?.toString() ?? '',
+      senderLabel: json['senderLabel']?.toString() ?? '',
+      isLocalOnly: json['isLocalOnly'] == true,
     );
   }
 }

@@ -19,6 +19,7 @@ import 'models/app_user.dart';
 import 'models/call_models.dart';
 import 'models/chat_message.dart';
 import 'models/chat_message_content.dart';
+import 'models/llm_settings.dart';
 import 'services/auth_service.dart';
 import 'services/app_notification_service.dart';
 import 'services/app_update_service.dart';
@@ -33,6 +34,8 @@ import 'services/giphy_service.dart';
 import 'services/keyboard_media_service.dart';
 import 'services/link_preview_service.dart';
 import 'services/local_media_library_service.dart';
+import 'services/llm_service.dart';
+import 'services/llm_settings_service.dart';
 import 'services/media_attachment_service.dart';
 import 'services/messaging_service.dart';
 import 'services/social_embed_service.dart';
@@ -65,11 +68,13 @@ class _ConversationEntry {
     required this.message,
     required this.content,
     this.reactions = const <_MessageReactionSummary>[],
+    this.allowReactions = true,
   });
 
   final ChatMessage message;
   final ChatMessageContent content;
   final List<_MessageReactionSummary> reactions;
+  final bool allowReactions;
 }
 
 class _MessageReactionSummary {
@@ -102,6 +107,7 @@ enum _CallAudioCueMode {
 
 enum _SessionMenuAction {
   editProfile,
+  llmSettings,
   callSettings,
   help,
   setStatusOnline,
@@ -112,6 +118,7 @@ enum _SessionMenuAction {
 
 enum _ComposerAttachmentAction {
   sticker,
+  factCheck,
   gif,
   image,
   background,
@@ -156,6 +163,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   static const String _plainTextTransportMode = 'plaintext_v1';
   static final RegExp _messageUrlPattern =
       RegExp(r'https?://[^\s<>()]+', caseSensitive: false);
+  static final RegExp _llmCommandMentionPattern =
+      RegExp(r'^\s*@([A-Za-z0-9._:-]+)\b');
   static const List<_ReactionPreset> _reactionPresets = <_ReactionPreset>[
     _ReactionPreset(emoji: '\u{1F44D}', label: 'Thumbs up'),
     _ReactionPreset(emoji: '\u{2764}\u{FE0F}', label: 'Love'),
@@ -193,6 +202,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final LinkPreviewService _linkPreviewService = LinkPreviewService();
   final LocalMediaLibraryService _localMediaLibraryService =
       LocalMediaLibraryService();
+  final LlmService _llmService = LlmService();
+  final LlmSettingsService _llmSettingsService = LlmSettingsService();
   final MediaAttachmentService _mediaAttachmentService =
       MediaAttachmentService();
   final BackchatApiClient _profileApi = BackchatApiService();
@@ -242,6 +253,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   double? _mediaUploadProgress;
   bool _isUploadingMedia = false;
   String _installedVersionLabel = '';
+  LlmSettings _llmSettings = LlmSettings.defaults;
+  bool _isInvokingLlm = false;
+  String _activeLlmHandle = '';
 
   SecretKey? _sharedSecret;
 
@@ -254,6 +268,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _bootstrapCrypto();
     _configureTrayIfDesktop();
     unawaited(_loadInstalledVersionLabel());
+    unawaited(_loadLlmSettings());
     unawaited(_appNotificationService.cancelIncomingCallNotification());
     unawaited(_appNotificationService.cancelUpdateNotification());
     _loadRememberedAccounts(autofillSingleAccount: true);
@@ -515,6 +530,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     } catch (_) {
       // Leave the version label empty if package metadata is unavailable.
     }
+  }
+
+  Future<void> _loadLlmSettings() async {
+    final LlmSettings settings = await _llmSettingsService.load();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _llmSettings = settings;
+    });
   }
 
   String _formatInstalledVersion(PackageInfo packageInfo) {
@@ -815,7 +840,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     if (_appLifecycleState != AppLifecycleState.resumed) {
       return;
     }
-    if (!await _updatePromptService.shouldPromptForUpdate(updateKey: updateKey)) {
+    if (!await _updatePromptService.shouldPromptForUpdate(
+        updateKey: updateKey)) {
       return;
     }
     await _updatePromptService.markPromptShown(updateKey: updateKey);
@@ -1195,13 +1221,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       if (content.kind == ChatMessageContentKind.reaction &&
           content.hasReferenceId &&
           content.hasText) {
-        reactionsByTarget.putIfAbsent(
-          content.referenceId,
-          () => <_PendingReaction>[],
-        ).add(_PendingReaction(message: message, content: content));
+        reactionsByTarget
+            .putIfAbsent(
+              content.referenceId,
+              () => <_PendingReaction>[],
+            )
+            .add(_PendingReaction(message: message, content: content));
         continue;
       }
-      messageEntries.add(_ConversationEntry(message: message, content: content));
+      messageEntries
+          .add(_ConversationEntry(message: message, content: content));
     }
 
     final List<_ConversationEntry> renderedConversation = messageEntries
@@ -1214,6 +1243,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                   const <_PendingReaction>[],
               currentUserId: currentUser.id,
             ),
+            allowReactions: !entry.message.isLocalOnly &&
+                entry.message.threadContactId.trim().isEmpty,
           ),
         )
         .toList();
@@ -1293,10 +1324,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       if (!reaction.content.hasText) {
         continue;
       }
-      sendersByEmoji.putIfAbsent(
-        reaction.content.text,
-        () => <String>{},
-      ).add(reaction.message.fromUserId);
+      sendersByEmoji
+          .putIfAbsent(
+            reaction.content.text,
+            () => <String>{},
+          )
+          .add(reaction.message.fromUserId);
     }
     return sendersByEmoji.entries
         .map(
@@ -1592,6 +1625,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             case _SessionMenuAction.editProfile:
               _editProfile();
               return;
+            case _SessionMenuAction.llmSettings:
+              unawaited(_editLlmSettings());
+              return;
             case _SessionMenuAction.callSettings:
               _editCallSettings();
               return;
@@ -1619,6 +1655,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             child: ListTile(
               leading: Icon(Icons.edit_outlined),
               title: Text('Edit profile'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<_SessionMenuAction>(
+            value: _SessionMenuAction.llmSettings,
+            child: ListTile(
+              leading: Icon(Icons.smart_toy_outlined),
+              title: Text('AI models'),
               contentPadding: EdgeInsets.zero,
             ),
           ),
@@ -1804,6 +1848,448 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
     await _callService.updateSettings(nextSettings);
     _showAuthMessage('Advanced call routing updated.');
+  }
+
+  Future<void> _editLlmSettings() async {
+    bool ollamaEnabled = _llmSettings.ollama.enabled;
+    bool remoteEnabled = _llmSettings.remote.enabled;
+    int contextMessageCount = _llmSettings.contextMessageCount;
+    String defaultFactCheckHandle = _llmSettings.defaultFactCheckHandle;
+    String ollamaModel = _llmSettings.ollama.model;
+    final TextEditingController ollamaHandleController =
+        TextEditingController(text: _llmSettings.ollama.handle);
+    final TextEditingController ollamaBaseUrlController = TextEditingController(
+      text: _llmSettings.ollama.baseUrl,
+    );
+    final TextEditingController remoteHandleController =
+        TextEditingController(text: _llmSettings.remote.handle);
+    final TextEditingController remoteBaseUrlController = TextEditingController(
+      text: _llmSettings.remote.baseUrl,
+    );
+    final TextEditingController remoteModelController = TextEditingController(
+      text: _llmSettings.remote.model,
+    );
+    final TextEditingController remoteApiKeyController = TextEditingController(
+      text: _llmSettings.remote.apiKey,
+    );
+    List<String> ollamaModels =
+        ollamaModel.trim().isEmpty ? <String>[] : <String>[ollamaModel.trim()];
+    bool isLoadingOllamaModels = false;
+    bool requestedInitialOllamaModels = false;
+    String? dialogError;
+
+    LlmSettings buildDraftSettings() {
+      final LlmProviderConfig nextOllama = _llmSettings.ollama.copyWith(
+        enabled: ollamaEnabled,
+        handle: ollamaHandleController.text.trim(),
+        baseUrl: ollamaBaseUrlController.text.trim(),
+        model: ollamaModel.trim(),
+      );
+      final LlmProviderConfig nextRemote = _llmSettings.remote.copyWith(
+        enabled: remoteEnabled,
+        handle: remoteHandleController.text.trim(),
+        baseUrl: remoteBaseUrlController.text.trim(),
+        model: remoteModelController.text.trim(),
+        apiKey: remoteApiKeyController.text.trim(),
+      );
+      final List<String> configuredHandles = <String>[
+        if (nextOllama.isConfigured) nextOllama.normalizedHandle,
+        if (nextRemote.isConfigured) nextRemote.normalizedHandle,
+      ];
+      String nextFactCheckHandle =
+          LlmSettings.normalizeMention(defaultFactCheckHandle);
+      if (configuredHandles.isEmpty) {
+        nextFactCheckHandle = '';
+      } else if (!configuredHandles.contains(nextFactCheckHandle)) {
+        nextFactCheckHandle = configuredHandles.first;
+      }
+      return _llmSettings.copyWith(
+        ollama: nextOllama,
+        remote: nextRemote,
+        contextMessageCount: contextMessageCount,
+        defaultFactCheckHandle: nextFactCheckHandle,
+      );
+    }
+
+    List<LlmProviderConfig> draftConfiguredProviders() {
+      final LlmSettings draft = buildDraftSettings();
+      return draft.configuredProviders;
+    }
+
+    String? validateDraft(LlmSettings draft) {
+      if (draft.ollama.enabled) {
+        if (draft.ollama.baseUrl.trim().isEmpty) {
+          return 'Enter an Ollama server URL.';
+        }
+        if (draft.ollama.model.trim().isEmpty) {
+          return 'Choose an Ollama model from the dropdown.';
+        }
+      }
+      if (draft.remote.enabled) {
+        if (draft.remote.baseUrl.trim().isEmpty) {
+          return 'Enter a remote model server URL.';
+        }
+        if (draft.remote.model.trim().isEmpty) {
+          return 'Enter the remote model name.';
+        }
+      }
+      final List<String> handles = draft.configuredProviders
+          .map((LlmProviderConfig provider) => provider.normalizedHandle)
+          .where((String handle) => handle.isNotEmpty)
+          .toList();
+      if (handles.length != handles.toSet().length) {
+        return 'Use different @model names for each connected model.';
+      }
+      return null;
+    }
+
+    Future<void> refreshOllamaModels(StateSetter setDialogState) async {
+      final String baseUrl = ollamaBaseUrlController.text.trim();
+      if (baseUrl.isEmpty) {
+        setDialogState(() {
+          dialogError = 'Enter an Ollama server URL before loading models.';
+        });
+        return;
+      }
+
+      setDialogState(() {
+        isLoadingOllamaModels = true;
+        dialogError = null;
+      });
+      try {
+        final List<String> models =
+            await _llmService.fetchOllamaModels(baseUrl);
+        setDialogState(() {
+          ollamaModels = models;
+          isLoadingOllamaModels = false;
+          if (ollamaModel.trim().isEmpty && models.isNotEmpty) {
+            ollamaModel = models.first;
+          }
+          if (ollamaHandleController.text.trim().isEmpty &&
+              ollamaModel.trim().isNotEmpty) {
+            ollamaHandleController.text =
+                LlmSettings.suggestMentionFromModel(ollamaModel);
+          }
+        });
+      } on LlmServiceException catch (e) {
+        setDialogState(() {
+          isLoadingOllamaModels = false;
+          dialogError = e.message;
+        });
+      } catch (_) {
+        setDialogState(() {
+          isLoadingOllamaModels = false;
+          dialogError = 'Could not load the Ollama model list.';
+        });
+      }
+    }
+
+    try {
+      final LlmSettings? nextSettings = await showDialog<LlmSettings>(
+        context: context,
+        builder: (BuildContext context) {
+          return StatefulBuilder(
+            builder: (BuildContext context, StateSetter setDialogState) {
+              if (!requestedInitialOllamaModels &&
+                  ollamaBaseUrlController.text.trim().isNotEmpty) {
+                requestedInitialOllamaModels = true;
+                unawaited(refreshOllamaModels(setDialogState));
+              }
+
+              final List<String> currentOllamaOptions =
+                  List<String>.from(ollamaModels);
+              if (ollamaModel.trim().isNotEmpty &&
+                  !currentOllamaOptions.contains(ollamaModel.trim())) {
+                currentOllamaOptions.insert(0, ollamaModel.trim());
+              }
+              final List<LlmProviderConfig> factCheckProviders =
+                  draftConfiguredProviders();
+
+              return AlertDialog(
+                title: const Text('AI models'),
+                content: SizedBox(
+                  width: 620,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        const Text(
+                          'Connect a local Ollama model or a remote OpenAI-compatible model, then use @modelname in chat.',
+                        ),
+                        const SizedBox(height: 16),
+                        DropdownButtonFormField<int>(
+                          initialValue: contextMessageCount,
+                          decoration: const InputDecoration(
+                            labelText: 'Conversation history to include',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const <int>[4, 6, 8, 10, 12]
+                              .map(
+                                (int value) => DropdownMenuItem<int>(
+                                  value: value,
+                                  child: Text('$value recent messages'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (int? value) {
+                            if (value == null) {
+                              return;
+                            }
+                            setDialogState(() {
+                              contextMessageCount = value;
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          value: ollamaEnabled,
+                          onChanged: (bool value) {
+                            setDialogState(() {
+                              ollamaEnabled = value;
+                              dialogError = null;
+                            });
+                          },
+                          title: const Text('Enable local Ollama'),
+                          subtitle: const Text(
+                            'Uses the Ollama server on your machine or LAN.',
+                          ),
+                        ),
+                        TextField(
+                          controller: ollamaHandleController,
+                          enabled: ollamaEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Mention name',
+                            hintText: 'ollama',
+                            helperText: 'Use this in chat as @modelname',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: ollamaBaseUrlController,
+                          enabled: ollamaEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Ollama server URL',
+                            hintText: 'http://127.0.0.1:11434',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                initialValue: ollamaModel.trim().isEmpty
+                                    ? null
+                                    : ollamaModel.trim(),
+                                decoration: const InputDecoration(
+                                  labelText: 'Ollama model',
+                                  border: OutlineInputBorder(),
+                                ),
+                                items: currentOllamaOptions
+                                    .map(
+                                      (String modelName) =>
+                                          DropdownMenuItem<String>(
+                                        value: modelName,
+                                        child: Text(modelName),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: !ollamaEnabled
+                                    ? null
+                                    : (String? value) {
+                                        if (value == null) {
+                                          return;
+                                        }
+                                        final String previousSuggested =
+                                            LlmSettings.suggestMentionFromModel(
+                                          ollamaModel,
+                                        );
+                                        final String currentHandle =
+                                            ollamaHandleController.text.trim();
+                                        ollamaModel = value;
+                                        final String nextSuggested =
+                                            LlmSettings.suggestMentionFromModel(
+                                          value,
+                                        );
+                                        if (currentHandle.isEmpty ||
+                                            currentHandle ==
+                                                previousSuggested) {
+                                          ollamaHandleController.text =
+                                              nextSuggested;
+                                        }
+                                        setDialogState(() {
+                                          dialogError = null;
+                                        });
+                                      },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            OutlinedButton.icon(
+                              onPressed: isLoadingOllamaModels
+                                  ? null
+                                  : () => refreshOllamaModels(setDialogState),
+                              icon: isLoadingOllamaModels
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.refresh),
+                              label: const Text('Load models'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        const SizedBox(height: 8),
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          value: remoteEnabled,
+                          onChanged: (bool value) {
+                            setDialogState(() {
+                              remoteEnabled = value;
+                              dialogError = null;
+                            });
+                          },
+                          title: const Text('Enable remote model'),
+                          subtitle: const Text(
+                            'Uses an OpenAI-compatible chat completions endpoint.',
+                          ),
+                        ),
+                        TextField(
+                          controller: remoteHandleController,
+                          enabled: remoteEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Mention name',
+                            hintText: 'remote',
+                            helperText: 'Use this in chat as @modelname',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: remoteBaseUrlController,
+                          enabled: remoteEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Remote server URL',
+                            hintText: 'https://api.example.com/v1',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: remoteModelController,
+                          enabled: remoteEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Remote model name',
+                            hintText: 'gpt-4.1-mini',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: remoteApiKeyController,
+                          enabled: remoteEnabled,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'API key (optional)',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        if (factCheckProviders.isNotEmpty)
+                          DropdownButtonFormField<String>(
+                            initialValue: buildDraftSettings()
+                                .defaultFactCheckProvider
+                                ?.normalizedHandle,
+                            decoration: const InputDecoration(
+                              labelText: 'Fact check quick-action model',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: factCheckProviders
+                                .map(
+                                  (LlmProviderConfig provider) =>
+                                      DropdownMenuItem<String>(
+                                    value: provider.normalizedHandle,
+                                    child: Text('@${provider.displayLabel}'),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: (String? value) {
+                              setDialogState(() {
+                                defaultFactCheckHandle = value ?? '';
+                              });
+                            },
+                          )
+                        else
+                          const Text(
+                            'Enable at least one model to use the fact check quick action.',
+                          ),
+                        if (dialogError != null) ...<Widget>[
+                          const SizedBox(height: 12),
+                          Text(
+                            dialogError!,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: () {
+                      final LlmSettings nextSettings = buildDraftSettings();
+                      final String? validationError =
+                          validateDraft(nextSettings);
+                      if (validationError != null) {
+                        setDialogState(() {
+                          dialogError = validationError;
+                        });
+                        return;
+                      }
+                      Navigator.of(context).pop(nextSettings);
+                    },
+                    child: const Text('Save'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+
+      if (nextSettings == null) {
+        return;
+      }
+
+      await _llmSettingsService.save(nextSettings);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _llmSettings = nextSettings;
+      });
+      _showAuthMessage('AI model settings updated.');
+    } finally {
+      ollamaHandleController.dispose();
+      ollamaBaseUrlController.dispose();
+      remoteHandleController.dispose();
+      remoteBaseUrlController.dispose();
+      remoteModelController.dispose();
+      remoteApiKeyController.dispose();
+    }
   }
 
   Future<void> _continueWithUsername() async {
@@ -2268,8 +2754,300 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
+    final LlmPromptCommand? llmCommand = _llmService.parseCommand(
+      rawText: clearText,
+      settings: _llmSettings,
+    );
+    if (llmCommand != null) {
+      _messageController.clear();
+      await _runLlmPrompt(
+        provider: llmCommand.provider,
+        prompt: llmCommand.prompt,
+        displayText: clearText,
+        factCheck: llmCommand.isLikelyFactCheck,
+        factCheckQuery: llmCommand.isLikelyFactCheck
+            ? _factCheckQueryHintForPrompt(llmCommand.prompt)
+            : '',
+      );
+      return;
+    }
+
+    final RegExpMatch? llmMentionMatch =
+        _llmCommandMentionPattern.firstMatch(clearText);
+    if (llmMentionMatch != null) {
+      final String rawMention = llmMentionMatch.group(1)?.trim() ?? '';
+      _showAuthMessage(
+        'No connected model matches @$rawMention. Update AI model settings first.',
+      );
+      return;
+    }
+
     await _sendContentMessage(ChatMessageContent.text(clearText));
     _messageController.clear();
+  }
+
+  String _buildLocalThreadMessageId(String scope) {
+    return [
+      'local-thread',
+      scope,
+      DateTime.now().toUtc().microsecondsSinceEpoch.toString(),
+    ].join(':');
+  }
+
+  String _llmSpeakerLabelForEntry(_ConversationEntry entry) {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser != null && entry.message.fromUserId == currentUser.id) {
+      return 'You';
+    }
+    if (entry.message.senderLabel.trim().isNotEmpty) {
+      return entry.message.senderLabel.trim();
+    }
+    return _displayNameForUserId(
+      entry.message.fromUserId,
+      fallback: _selectedContact?.displayName,
+    );
+  }
+
+  String _llmTextForContent(ChatMessageContent content) {
+    if (content.kind == ChatMessageContentKind.reaction) {
+      return '';
+    }
+    String text = content.kind == ChatMessageContentKind.text
+        ? content.text.trim()
+        : content.previewText.trim();
+    if (content.hasUrl &&
+        content.kind != ChatMessageContentKind.image &&
+        content.kind != ChatMessageContentKind.gif &&
+        !text.contains(content.url)) {
+      text = text.isEmpty ? content.url : '$text (${content.url})';
+    }
+    if (text.length > 420) {
+      return '${text.substring(0, 417)}...';
+    }
+    return text;
+  }
+
+  List<LlmContextLine> _buildLlmContextLines() {
+    final int maxCount = _llmSettings.contextMessageCount;
+    final List<_ConversationEntry> sourceEntries = _conversation
+        .where(
+          (_ConversationEntry entry) =>
+              entry.content.kind != ChatMessageContentKind.reaction,
+        )
+        .toList();
+    final int startIndex =
+        sourceEntries.length > maxCount ? sourceEntries.length - maxCount : 0;
+    return sourceEntries
+        .sublist(startIndex)
+        .map(
+          (_ConversationEntry entry) => LlmContextLine(
+            speaker: _llmSpeakerLabelForEntry(entry),
+            text: _llmTextForContent(entry.content),
+          ),
+        )
+        .where((LlmContextLine line) => line.text.trim().isNotEmpty)
+        .toList();
+  }
+
+  String _latestFactCheckClaimCandidate() {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (selectedContact == null) {
+      return '';
+    }
+
+    for (final _ConversationEntry entry in _conversation.reversed) {
+      if (entry.content.kind == ChatMessageContentKind.reaction ||
+          entry.message.isLocalOnly ||
+          entry.message.fromUserId == currentUser?.id ||
+          entry.message.fromUserId != selectedContact.id) {
+        continue;
+      }
+      final String claim = _llmTextForContent(entry.content);
+      if (claim.isNotEmpty) {
+        return claim;
+      }
+    }
+    return '';
+  }
+
+  String _factCheckQueryHintForPrompt(String prompt) {
+    final String trimmedPrompt = prompt.trim();
+    final String normalizedPrompt = trimmedPrompt.toLowerCase();
+    if (normalizedPrompt == 'is this true?' ||
+        normalizedPrompt == 'is this true' ||
+        normalizedPrompt == 'fact check this' ||
+        normalizedPrompt == 'fact-check this' ||
+        normalizedPrompt == 'verify this') {
+      final String lastClaim = _latestFactCheckClaimCandidate();
+      if (lastClaim.isNotEmpty) {
+        return lastClaim;
+      }
+    }
+    return trimmedPrompt;
+  }
+
+  Future<void> _storeLocalThreadMessage({
+    required String fromUserId,
+    required String toUserId,
+    required String threadContactId,
+    required ChatMessageContent content,
+    String senderLabel = '',
+    bool scrollToBottom = true,
+  }) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    final DateTime sentAt = DateTime.now();
+    final ChatMessage message = ChatMessage(
+      localId: _buildLocalThreadMessageId(threadContactId),
+      fromUserId: fromUserId,
+      toUserId: toUserId,
+      cipherText: content.toTransportPayload(),
+      sentAt: sentAt,
+      isRead: true,
+      threadContactId: threadContactId,
+      senderLabel: senderLabel,
+      isLocalOnly: true,
+    );
+
+    await _messagingService.storeLocalOnly(
+      currentUserId: currentUser.id,
+      message: message,
+    );
+    await _refreshConversation(scrollToBottom: scrollToBottom);
+  }
+
+  Future<void> _runLlmPrompt({
+    required LlmProviderConfig provider,
+    required String prompt,
+    required String displayText,
+    bool factCheck = false,
+    String factCheckQuery = '',
+  }) async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null || selectedContact == null) {
+      return;
+    }
+
+    final List<LlmContextLine> contextLines = _buildLlmContextLines();
+    final String llmUserId = 'llm:${provider.normalizedHandle}';
+    final String userBubbleText = displayText.trim().isEmpty
+        ? '@${provider.displayLabel} ${prompt.trim()}'
+        : displayText.trim();
+    await _storeLocalThreadMessage(
+      fromUserId: currentUser.id,
+      toUserId: llmUserId,
+      threadContactId: selectedContact.id,
+      content: ChatMessageContent.text(userBubbleText),
+    );
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isInvokingLlm = true;
+      _activeLlmHandle = provider.displayLabel;
+    });
+
+    try {
+      final String reply = await _llmService.generateReply(
+        provider: provider,
+        prompt: prompt,
+        contextLines: contextLines,
+        factCheck: factCheck,
+        factCheckQuery: factCheckQuery,
+        contactName: selectedContact.displayName,
+      );
+      final bool shared = await _sendContentMessage(
+        ChatMessageContent.assistant(
+          text: reply,
+          label: '@${provider.displayLabel}',
+        ),
+      );
+      if (!shared) {
+        await _storeLocalThreadMessage(
+          fromUserId: llmUserId,
+          toUserId: currentUser.id,
+          threadContactId: selectedContact.id,
+          content: ChatMessageContent.assistant(
+            text: reply,
+            label: '@${provider.displayLabel}',
+          ),
+          senderLabel: '@${provider.displayLabel}',
+        );
+      }
+    } on LlmServiceException catch (e) {
+      await _storeLocalThreadMessage(
+        fromUserId: llmUserId,
+        toUserId: currentUser.id,
+        threadContactId: selectedContact.id,
+        content: ChatMessageContent.assistant(
+          text: 'I could not respond: ${e.message}',
+          label: '@${provider.displayLabel}',
+        ),
+        senderLabel: '@${provider.displayLabel}',
+      );
+      _showAuthMessage(e.message);
+    } catch (_) {
+      const String errorMessage = 'Could not reach that model right now.';
+      await _storeLocalThreadMessage(
+        fromUserId: llmUserId,
+        toUserId: currentUser.id,
+        threadContactId: selectedContact.id,
+        content: ChatMessageContent.assistant(
+          text: 'I could not respond: $errorMessage',
+          label: '@${provider.displayLabel}',
+        ),
+        senderLabel: '@${provider.displayLabel}',
+      );
+      _showAuthMessage(errorMessage);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isInvokingLlm = false;
+          _activeLlmHandle = '';
+        });
+      }
+    }
+  }
+
+  Future<void> _factCheckCurrentConversation() async {
+    final AppUser? selectedContact = _selectedContact;
+    if (selectedContact == null) {
+      return;
+    }
+
+    final LlmProviderConfig? provider = _llmSettings.defaultFactCheckProvider;
+    if (provider == null) {
+      _showAuthMessage('Connect a local or remote AI model first.');
+      await _editLlmSettings();
+      return;
+    }
+
+    final String draftText = _messageController.text.trim();
+    final String claim =
+        draftText.isNotEmpty ? draftText : _latestFactCheckClaimCandidate();
+    if (claim.isEmpty) {
+      _showAuthMessage(
+        'Type a claim to fact-check, or open a chat with a recent message.',
+      );
+      return;
+    }
+
+    _messageController.clear();
+    final String prompt =
+        'Fact-check this claim from ${selectedContact.displayName}: "$claim"';
+    await _runLlmPrompt(
+      provider: provider,
+      prompt: prompt,
+      displayText: '@${provider.displayLabel} fact check: "$claim"',
+      factCheck: true,
+      factCheckQuery: claim,
+    );
   }
 
   void _setMediaUploadProgress(double? progress) {
@@ -2356,14 +3134,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return '$prefix-${DateTime.now().toUtc().microsecondsSinceEpoch}.$extension';
   }
 
-  Future<void> _sendContentMessage(
+  Future<bool> _sendContentMessage(
     ChatMessageContent content, {
     bool scrollToBottom = true,
   }) async {
     final AppUser? currentUser = _currentUser;
     final AppUser? selectedContact = _selectedContact;
     if (currentUser == null || selectedContact == null) {
-      return;
+      return false;
     }
 
     final ChatMessageContent preparedContent;
@@ -2379,11 +3157,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
       _clearMediaUploadProgress();
-      return;
+      return false;
     } catch (_) {
       _showAuthMessage('Could not prepare that GIF or image right now.');
       _clearMediaUploadProgress();
-      return;
+      return false;
     }
 
     final String payload = preparedContent.toTransportPayload();
@@ -2394,7 +3172,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         'That image or GIF is too large to send directly. Pick a smaller file or share a link instead.',
       );
       _clearMediaUploadProgress();
-      return;
+      return false;
     }
     if (!_messagingService.isRemoteTransportEnabled &&
         payloadSize > (MediaAttachmentService.maxInlineBytes * 2)) {
@@ -2402,7 +3180,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         'That image or GIF is too large to send in offline mode. Sign in to the Backchat server or choose a smaller file.',
       );
       _clearMediaUploadProgress();
-      return;
+      return false;
     }
 
     late final String cipherText;
@@ -2411,7 +3189,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     } else {
       if (_sharedSecret == null) {
         _clearMediaUploadProgress();
-        return;
+        return false;
       }
       final List<int> aad = _buildMessageAad(
         fromUserId: currentUser.id,
@@ -2444,17 +3222,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
       _clearMediaUploadProgress();
-      return;
+      return false;
     } catch (_) {
       _showAuthMessage('Could not send message right now.');
       _clearMediaUploadProgress();
-      return;
+      return false;
     }
 
     _clearMediaUploadProgress();
     await _tryAutoSaveImageMessage(message: message, content: content);
     await _refreshConversation(scrollToBottom: scrollToBottom);
     await _syncMessages(showErrors: false);
+    return true;
   }
 
   Future<void> _sendStickerMessage(_StickerPreset sticker) async {
@@ -2792,6 +3571,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     switch (action) {
       case _ComposerAttachmentAction.sticker:
         await _showStickerPicker();
+        return;
+      case _ComposerAttachmentAction.factCheck:
+        await _factCheckCurrentConversation();
         return;
       case _ComposerAttachmentAction.gif:
         await _showGifPicker();
@@ -3435,6 +4217,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           ),
         ),
         PopupMenuItem<_ComposerAttachmentAction>(
+          value: _ComposerAttachmentAction.factCheck,
+          child: ListTile(
+            leading: Icon(Icons.fact_check_outlined),
+            title: Text('Fact check'),
+          ),
+        ),
+        PopupMenuItem<_ComposerAttachmentAction>(
           value: _ComposerAttachmentAction.gif,
           child: ListTile(
             leading: Icon(Icons.gif_box_outlined),
@@ -3494,7 +4283,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       decoration: InputDecoration(
         hintText: selectedContact == null
             ? 'Select a contact to start chatting'
-            : 'Type a message for ${selectedContact.displayName}',
+            : 'Type a message for ${selectedContact.displayName} or use @model prompt',
         border: const OutlineInputBorder(),
       ),
     );
@@ -3508,6 +4297,24 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: <Widget>[
+        if (_isInvokingLlm && _activeLlmHandle.trim().isNotEmpty) ...<Widget>[
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Checking with @$_activeLlmHandle',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
         if (_mediaUploadProgress != null) ...<Widget>[
           SizedBox(
             width: 150,
@@ -4348,6 +5155,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }) {
     final ThemeData theme = Theme.of(context);
     final bool isMine = entry.message.fromUserId == currentUser.id;
+    final bool isAssistantMessage = entry.message.isLocalOnly && !isMine;
+    final String senderLabel = isMine
+        ? 'You'
+        : (entry.message.senderLabel.trim().isNotEmpty
+            ? entry.message.senderLabel.trim()
+            : _displayNameForUserId(
+                entry.message.fromUserId,
+                fallback: _selectedContact?.displayName,
+              ));
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -4360,12 +5176,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                isMine
-                    ? 'You'
-                    : _displayNameForUserId(
-                        entry.message.fromUserId,
-                        fallback: _selectedContact?.displayName,
-                      ),
+                senderLabel,
                 style: theme.textTheme.labelMedium,
               ),
               const SizedBox(height: 4),
@@ -4373,7 +5184,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 decoration: BoxDecoration(
                   color: isMine
                       ? theme.colorScheme.primaryContainer
-                      : theme.colorScheme.surfaceContainerHighest,
+                      : (isAssistantMessage
+                          ? theme.colorScheme.tertiaryContainer
+                          : theme.colorScheme.surfaceContainerHighest),
                   borderRadius: BorderRadius.circular(18),
                 ),
                 child: Padding(
@@ -4390,32 +5203,34 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                     _formatMessageTimestamp(entry.message.sentAt),
                     style: theme.textTheme.bodySmall,
                   ),
-                  const SizedBox(width: 4),
-                  PopupMenuButton<_ReactionPreset>(
-                    tooltip: 'React',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onSelected: (_ReactionPreset reaction) =>
-                        _sendReactionForEntry(entry, reaction),
-                    itemBuilder: (BuildContext context) {
-                      return _reactionPresets
-                          .map(
-                            (_ReactionPreset reaction) =>
-                                PopupMenuItem<_ReactionPreset>(
-                              value: reaction,
-                              child: Text(
-                                '${reaction.emoji} ${reaction.label}',
+                  if (entry.allowReactions) ...<Widget>[
+                    const SizedBox(width: 4),
+                    PopupMenuButton<_ReactionPreset>(
+                      tooltip: 'React',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onSelected: (_ReactionPreset reaction) =>
+                          _sendReactionForEntry(entry, reaction),
+                      itemBuilder: (BuildContext context) {
+                        return _reactionPresets
+                            .map(
+                              (_ReactionPreset reaction) =>
+                                  PopupMenuItem<_ReactionPreset>(
+                                value: reaction,
+                                child: Text(
+                                  '${reaction.emoji} ${reaction.label}',
+                                ),
                               ),
-                            ),
-                          )
-                          .toList();
-                    },
-                    child: Icon(
-                      Icons.add_reaction_outlined,
-                      size: 18,
-                      color: theme.colorScheme.onSurfaceVariant,
+                            )
+                            .toList();
+                      },
+                      child: Icon(
+                        Icons.add_reaction_outlined,
+                        size: 18,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
               if (entry.reactions.isNotEmpty) ...<Widget>[
@@ -4464,6 +5279,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           content,
           isMine: isMine,
         ),
+      ChatMessageContentKind.assistant => _buildAssistantMessageContent(
+          content,
+          isMine: isMine,
+        ),
       ChatMessageContentKind.sticker => Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4496,6 +5315,38 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       ChatMessageContentKind.file =>
         _buildStructuredMediaContent(content, isMine: isMine),
     };
+  }
+
+  Widget _buildAssistantMessageContent(
+    ChatMessageContent content, {
+    required bool isMine,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              Icons.smart_toy_outlined,
+              size: 16,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              content.hasLabel ? content.label : 'AI reply',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.primary,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _buildTextMessageContent(content, isMine: isMine),
+      ],
+    );
   }
 
   Widget _buildTextMessageContent(

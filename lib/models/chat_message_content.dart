@@ -2,6 +2,7 @@ import 'dart:convert';
 
 enum ChatMessageContentKind {
   text,
+  assistant,
   image,
   gif,
   sticker,
@@ -33,6 +34,17 @@ class ChatMessageContent {
     return ChatMessageContent(
       kind: ChatMessageContentKind.text,
       text: value,
+    );
+  }
+
+  factory ChatMessageContent.assistant({
+    required String text,
+    String label = '',
+  }) {
+    return ChatMessageContent(
+      kind: ChatMessageContentKind.assistant,
+      text: text,
+      label: label,
     );
   }
 
@@ -134,6 +146,8 @@ class ChatMessageContent {
   String get previewText {
     return switch (kind) {
       ChatMessageContentKind.text => text,
+      ChatMessageContentKind.assistant =>
+        hasLabel ? 'AI ($label): $text' : 'AI: $text',
       ChatMessageContentKind.image => hasText ? 'Photo: $text' : 'Photo',
       ChatMessageContentKind.gif => hasText ? 'GIF: $text' : 'GIF',
       ChatMessageContentKind.sticker =>
