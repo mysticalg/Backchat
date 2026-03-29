@@ -40,6 +40,7 @@ import 'services/media_attachment_service.dart';
 import 'services/messaging_service.dart';
 import 'services/social_embed_service.dart';
 import 'services/update_prompt_service.dart';
+import 'utils/url_utils.dart';
 import 'widgets/giphy_picker_dialog.dart';
 import 'widgets/inline_media_player.dart';
 import 'widgets/social_embed_card.dart';
@@ -161,8 +162,6 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
   static const Duration _updateCheckInterval = Duration(minutes: 30);
   static const String _plainTextTransportMode = 'plaintext_v1';
-  static final RegExp _messageUrlPattern =
-      RegExp(r'https?://[^\s<>()]+', caseSensitive: false);
   static final RegExp _llmCommandMentionPattern =
       RegExp(r'^\s*@([A-Za-z0-9._:-]+)\b');
   static const List<_ReactionPreset> _reactionPresets = <_ReactionPreset>[
@@ -3499,10 +3498,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             builder: (BuildContext context, StateSetter setDialogState) {
               void submit() {
                 final String rawUrl = urlController.text.trim();
-                final Uri? uri = Uri.tryParse(rawUrl);
-                final bool validUrl = uri != null &&
-                    uri.hasScheme &&
-                    (uri.scheme == 'https' || uri.scheme == 'http');
+                final Uri? uri = normalizeHttpUrl(rawUrl);
+                final bool validUrl = uri != null;
                 if (!validUrl) {
                   setDialogState(() {
                     validationError = 'Enter a valid http or https URL.';
@@ -3511,30 +3508,31 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 }
 
                 final String caption = captionController.text.trim();
+                final String normalizedUrl = uri.toString();
                 final ChatMessageContent content = switch (kind) {
                   ChatMessageContentKind.image => ChatMessageContent.image(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       caption: caption,
                     ),
                   ChatMessageContentKind.gif => ChatMessageContent.gif(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       caption: caption,
                     ),
                   ChatMessageContentKind.background =>
                     ChatMessageContent.background(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       label: caption,
                     ),
                   ChatMessageContentKind.video => ChatMessageContent.video(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       caption: caption,
                     ),
                   ChatMessageContentKind.audio => ChatMessageContent.audio(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       caption: caption,
                     ),
                   ChatMessageContentKind.file => ChatMessageContent.file(
-                      url: rawUrl,
+                      url: normalizedUrl,
                       label: caption,
                     ),
                   _ => ChatMessageContent.text(caption),
@@ -5412,6 +5410,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     final SocialEmbedDescriptor? socialEmbed =
         _socialEmbedService.resolve(content.url);
     if (socialEmbed != null) {
+      if (_shouldUseLinkPreviewForSocialEmbed(socialEmbed)) {
+        return _buildUrlPreviewCard(
+          content.url,
+          isMine: isMine,
+          titleOverride: content.hasText
+              ? content.text
+              : (content.hasLabel ? content.label : socialEmbed.title),
+        );
+      }
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5470,7 +5477,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     final ThemeData theme = Theme.of(context);
     final List<InlineSpan> spans = <InlineSpan>[];
     int cursor = 0;
-    for (final RegExpMatch match in _messageUrlPattern.allMatches(text)) {
+    for (final RegExpMatch match in messageUrlPattern.allMatches(text)) {
       final String normalized = _normalizeMatchedUrl(match.group(0) ?? '');
       if (normalized.isEmpty) {
         continue;
@@ -5513,7 +5520,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Uri? _firstUrlFromText(String text) {
-    for (final RegExpMatch match in _messageUrlPattern.allMatches(text)) {
+    for (final RegExpMatch match in messageUrlPattern.allMatches(text)) {
       final String normalized = _normalizeMatchedUrl(match.group(0) ?? '');
       final Uri? uri = Uri.tryParse(normalized);
       if (uri != null &&
@@ -5526,7 +5533,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   String _normalizeMatchedUrl(String rawMatch) {
-    return rawMatch.trim().replaceAll(RegExp(r'[.,!?;:]+$'), '');
+    return normalizeHttpUrl(rawMatch)?.toString() ?? '';
   }
 
   Widget _buildAutoPreviewForUrl(
@@ -5538,6 +5545,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       rawUrl,
     );
     if (socialEmbed != null) {
+      if (_shouldUseLinkPreviewForSocialEmbed(socialEmbed)) {
+        return _buildUrlPreviewCard(
+          rawUrl,
+          isMine: isMine,
+          titleOverride: socialEmbed.title,
+        );
+      }
       return SocialEmbedCard(descriptor: socialEmbed);
     }
     if (_linkPreviewService.isDirectAudioUrl(rawUrl)) {
@@ -5547,6 +5561,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return InlineVideoPlayer(url: rawUrl);
     }
     return _buildUrlPreviewCard(rawUrl, isMine: isMine);
+  }
+
+  bool _shouldUseLinkPreviewForSocialEmbed(SocialEmbedDescriptor descriptor) {
+    return !kIsWeb && Platform.isWindows && descriptor.provider == 'youtube';
   }
 
   Widget _buildUrlPreviewCard(
@@ -5890,8 +5908,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Future<void> _openExternalUrl(String rawUrl) async {
-    final Uri? uri = Uri.tryParse(rawUrl.trim());
-    if (uri == null || !uri.hasScheme) {
+    final Uri? uri = normalizeHttpUrl(rawUrl);
+    if (uri == null) {
       _showAuthMessage('This media link is not valid.');
       return;
     }

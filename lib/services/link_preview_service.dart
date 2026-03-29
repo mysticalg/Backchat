@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 
+import '../utils/url_utils.dart';
+
 class LinkPreviewData {
   const LinkPreviewData({
     required this.url,
@@ -22,16 +24,13 @@ class LinkPreviewData {
 class LinkPreviewService {
   LinkPreviewService({http.Client? client}) : _client = client ?? http.Client();
 
-  static final RegExp _urlPattern =
-      RegExp(r'https?://[^\s<>()]+', caseSensitive: false);
-
   final http.Client _client;
   final Map<String, Future<LinkPreviewData?>> _cache =
       <String, Future<LinkPreviewData?>>{};
 
   Uri? extractFirstUrl(String text) {
-    for (final RegExpMatch match in _urlPattern.allMatches(text)) {
-      final Uri? uri = _normalizeUrlMatch(match.group(0) ?? '');
+    for (final RegExpMatch match in messageUrlPattern.allMatches(text)) {
+      final Uri? uri = normalizeHttpUrl(match.group(0) ?? '');
       if (uri != null) {
         return uri;
       }
@@ -41,8 +40,8 @@ class LinkPreviewService {
 
   List<String> extractUrls(String text) {
     final List<String> urls = <String>[];
-    for (final RegExpMatch match in _urlPattern.allMatches(text)) {
-      final Uri? uri = _normalizeUrlMatch(match.group(0) ?? '');
+    for (final RegExpMatch match in messageUrlPattern.allMatches(text)) {
+      final Uri? uri = normalizeHttpUrl(match.group(0) ?? '');
       if (uri != null) {
         urls.add(uri.toString());
       }
@@ -51,7 +50,7 @@ class LinkPreviewService {
   }
 
   Future<LinkPreviewData?> fetchPreview(String rawUrl) {
-    final Uri? uri = _normalizeUrlMatch(rawUrl);
+    final Uri? uri = normalizeHttpUrl(rawUrl);
     if (uri == null) {
       return Future<LinkPreviewData?>.value(null);
     }
@@ -93,20 +92,12 @@ class LinkPreviewService {
       final http.Response response =
           await _client.get(uri).timeout(const Duration(seconds: 8));
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        return LinkPreviewData(
-          url: uri,
-          title: _titleFromPath(uri),
-          siteName: uri.host,
-        );
+        return _fallbackPreview(uri);
       }
 
       final String contentType = response.headers['content-type'] ?? '';
       if (!contentType.toLowerCase().contains('text/html')) {
-        return LinkPreviewData(
-          url: uri,
-          title: _titleFromPath(uri),
-          siteName: uri.host,
-        );
+        return _fallbackPreview(uri);
       }
 
       final document = html_parser.parse(response.body);
@@ -143,29 +134,19 @@ class LinkPreviewService {
         siteName: siteName,
       );
     } on TimeoutException {
-      return LinkPreviewData(
-        url: uri,
-        title: _titleFromPath(uri),
-        siteName: uri.host,
-      );
+      return _fallbackPreview(uri);
     } catch (_) {
-      return LinkPreviewData(
-        url: uri,
-        title: _titleFromPath(uri),
-        siteName: uri.host,
-      );
+      return _fallbackPreview(uri);
     }
   }
 
-  Uri? _normalizeUrlMatch(String rawValue) {
-    final String trimmed = rawValue.trim().replaceAll(RegExp(r'[.,!?;:]+$'), '');
-    final Uri? uri = Uri.tryParse(trimmed);
-    if (uri == null ||
-        !uri.hasScheme ||
-        (uri.scheme != 'http' && uri.scheme != 'https')) {
-      return null;
-    }
-    return uri;
+  LinkPreviewData _fallbackPreview(Uri uri) {
+    return LinkPreviewData(
+      url: uri,
+      title: _titleFromPath(uri),
+      siteName: uri.host,
+      imageUrl: _youtubeThumbnail(uri),
+    );
   }
 
   bool _hasKnownExtension(String rawUrl, List<String> extensions) {
@@ -220,7 +201,8 @@ class LinkPreviewService {
     if (uri.pathSegments.isEmpty) {
       return uri.host;
     }
-    final String lastSegment = uri.pathSegments.last.replaceAll('-', ' ').trim();
+    final String lastSegment =
+        uri.pathSegments.last.replaceAll('-', ' ').trim();
     return lastSegment.isEmpty ? uri.host : lastSegment;
   }
 

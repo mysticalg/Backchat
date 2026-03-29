@@ -17,6 +17,32 @@ void main() {
     );
   });
 
+  test('builds youtube embed urls from share links', () {
+    final SocialEmbedDescriptor? descriptor = service.resolve(
+      'https://youtu.be/dQw4w9WgXcQ?si=abc123',
+    );
+
+    expect(descriptor, isNotNull);
+    expect(descriptor!.provider, 'youtube');
+    expect(
+      descriptor.embedUrl,
+      contains('https://www.youtube.com/embed/dQw4w9WgXcQ'),
+    );
+  });
+
+  test('builds youtube embed urls from scheme-less share links', () {
+    final SocialEmbedDescriptor? descriptor = service.resolve(
+      'youtu.be/dQw4w9WgXcQ?si=abc123',
+    );
+
+    expect(descriptor, isNotNull);
+    expect(descriptor!.provider, 'youtube');
+    expect(
+      descriptor.embedUrl,
+      contains('https://www.youtube.com/embed/dQw4w9WgXcQ'),
+    );
+  });
+
   test('builds x tweet embed urls', () {
     final SocialEmbedDescriptor? descriptor = service.resolve(
       'https://x.com/backchat/status/1234567890',
@@ -51,5 +77,17 @@ void main() {
     expect(descriptor, isNotNull);
     expect(descriptor!.provider, 'facebook');
     expect(descriptor.embedUrl, contains('facebook.com/plugins/video.php'));
+  });
+
+  test('uses strict cross-origin referrer policy in embed html', () {
+    final SocialEmbedDescriptor? descriptor = service.resolve(
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    );
+
+    expect(descriptor, isNotNull);
+    expect(
+      service.buildEmbedHtml(descriptor!),
+      contains('referrerpolicy="strict-origin-when-cross-origin"'),
+    );
   });
 }

@@ -13,6 +13,17 @@ void main() {
     expect(url.toString(), 'https://backchatapp.co.uk/#downloads');
   });
 
+  test('extracts scheme-less urls from text', () {
+    final LinkPreviewService service = LinkPreviewService();
+
+    final Uri? url = service.extractFirstUrl(
+      'Watch this youtu.be/dQw4w9WgXcQ?si=abc123 right now.',
+    );
+
+    expect(url, isNotNull);
+    expect(url.toString(), 'https://youtu.be/dQw4w9WgXcQ?si=abc123');
+  });
+
   test('recognizes direct audio and video links by extension', () {
     final LinkPreviewService service = LinkPreviewService();
 

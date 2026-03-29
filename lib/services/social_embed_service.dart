@@ -1,3 +1,5 @@
+import '../utils/url_utils.dart';
+
 class SocialEmbedDescriptor {
   const SocialEmbedDescriptor({
     required this.provider,
@@ -18,8 +20,8 @@ class SocialEmbedService {
   const SocialEmbedService();
 
   SocialEmbedDescriptor? resolve(String rawUrl) {
-    final Uri? uri = Uri.tryParse(rawUrl.trim());
-    if (uri == null || !uri.hasScheme) {
+    final Uri? uri = normalizeHttpUrl(rawUrl);
+    if (uri == null) {
       return null;
     }
 
@@ -51,8 +53,7 @@ class SocialEmbedService {
         return SocialEmbedDescriptor(
           provider: 'instagram',
           sourceUrl: uri,
-          embedUrl:
-              'https://www.instagram.com/$kind/$postId/embed/captioned/',
+          embedUrl: 'https://www.instagram.com/$kind/$postId/embed/captioned/',
           aspectRatio: isReel ? (9 / 16) : 1,
           title: 'Instagram',
         );
@@ -122,7 +123,7 @@ class SocialEmbedService {
       title="$safeTitle"
       allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
       allowfullscreen
-      referrerpolicy="origin-when-cross-origin">
+      referrerpolicy="strict-origin-when-cross-origin">
     </iframe>
   </body>
 </html>
