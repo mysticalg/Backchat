@@ -19,6 +19,23 @@ void main() {
     expect(decoded.text, 'Weekend mood');
   });
 
+  test('round-trips reaction payloads with target ids', () {
+    final ChatMessageContent original = ChatMessageContent.reaction(
+      emoji: '\u{1F44D}',
+      targetId: 'message:abcd1234',
+    );
+
+    final ChatMessageContent? decoded =
+        ChatMessageContent.tryFromTransportPayload(
+      original.toTransportPayload(),
+    );
+
+    expect(decoded, isNotNull);
+    expect(decoded!.kind, ChatMessageContentKind.reaction);
+    expect(decoded.text, '\u{1F44D}');
+    expect(decoded.referenceId, 'message:abcd1234');
+  });
+
   test('builds useful previews for non-text messages', () {
     expect(
       ChatMessageContent.sticker(
@@ -40,6 +57,13 @@ void main() {
         label: 'Ocean blue',
       ).previewText,
       'Background: Ocean blue',
+    );
+    expect(
+      ChatMessageContent.reaction(
+        emoji: '\u{1F602}',
+        targetId: 'message:1234',
+      ).previewText,
+      'Reacted with \u{1F602}',
     );
   });
 

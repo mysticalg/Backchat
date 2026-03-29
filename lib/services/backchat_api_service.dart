@@ -129,6 +129,7 @@ abstract class BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   });
 
   Future<CallServerConfig> fetchCallConfig();
@@ -379,6 +380,7 @@ class BackchatApiService implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     if (!isConfigured) {
       throw const BackchatApiException(
@@ -393,11 +395,13 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
 
+    onProgress?.call(0);
     if (_shouldPreferChunkedUpload(bytes.length)) {
       return _uploadMediaInChunks(
         bytes: bytes,
         mimeType: mimeType,
         filename: filename,
+        onProgress: onProgress,
       );
     }
 
@@ -406,6 +410,7 @@ class BackchatApiService implements BackchatApiClient {
         bytes: bytes,
         mimeType: mimeType,
         filename: filename,
+        onProgress: onProgress,
       );
     } on BackchatApiException catch (e) {
       if (_shouldRetryChunkedUpload(e)) {
@@ -413,6 +418,7 @@ class BackchatApiService implements BackchatApiClient {
           bytes: bytes,
           mimeType: mimeType,
           filename: filename,
+          onProgress: onProgress,
         );
       }
       rethrow;
@@ -423,6 +429,7 @@ class BackchatApiService implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     final Uri uri = Uri.parse('${_apiBaseUrl.trim()}/upload_media.php');
     final http.MultipartRequest request = http.MultipartRequest('POST', uri)
@@ -444,6 +451,7 @@ class BackchatApiService implements BackchatApiClient {
     try {
       final http.StreamedResponse streamed =
           await _client.send(request).timeout(_requestTimeout);
+      onProgress?.call(0.85);
       response = await http.Response.fromStream(streamed).timeout(
         _requestTimeout,
       );
@@ -489,6 +497,7 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
 
+    onProgress?.call(1);
     return UploadedMedia(
       url: url,
       mimeType: resolvedMimeType,
@@ -501,6 +510,7 @@ class BackchatApiService implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     final Map<String, dynamic> startPayload = await _postJson(
       '/upload_media.php',
@@ -547,6 +557,7 @@ class BackchatApiService implements BackchatApiClient {
           'chunkBase64': chunkBase64,
         },
       );
+      onProgress?.call(end / bytes.length);
     }
 
     final Map<String, dynamic> finishPayload = await _postJson(
@@ -578,6 +589,7 @@ class BackchatApiService implements BackchatApiClient {
       );
     }
 
+    onProgress?.call(1);
     return UploadedMedia(
       url: url,
       mimeType: resolvedMimeType,

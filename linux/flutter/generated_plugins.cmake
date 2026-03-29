@@ -6,6 +6,8 @@ list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
   file_selector_linux
   flutter_webrtc
+  media_kit_libs_linux
+  media_kit_video
   tray_manager
   url_launcher_linux
 )

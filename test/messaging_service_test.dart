@@ -90,6 +90,7 @@ class _FakeApiClient implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     throw UnimplementedError();
   }

@@ -6,9 +6,11 @@ import 'package:cryptography/cryptography.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart' show XFile;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -29,12 +31,19 @@ import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
 import 'services/giphy_service.dart';
 import 'services/keyboard_media_service.dart';
+import 'services/link_preview_service.dart';
+import 'services/local_media_library_service.dart';
 import 'services/media_attachment_service.dart';
 import 'services/messaging_service.dart';
+import 'services/social_embed_service.dart';
+import 'services/update_prompt_service.dart';
 import 'widgets/giphy_picker_dialog.dart';
+import 'widgets/inline_media_player.dart';
+import 'widgets/social_embed_card.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   runApp(const BackchatApp());
 }
 
@@ -53,6 +62,30 @@ class BackchatApp extends StatelessWidget {
 
 class _ConversationEntry {
   const _ConversationEntry({
+    required this.message,
+    required this.content,
+    this.reactions = const <_MessageReactionSummary>[],
+  });
+
+  final ChatMessage message;
+  final ChatMessageContent content;
+  final List<_MessageReactionSummary> reactions;
+}
+
+class _MessageReactionSummary {
+  const _MessageReactionSummary({
+    required this.emoji,
+    required this.count,
+    required this.includesCurrentUser,
+  });
+
+  final String emoji;
+  final int count;
+  final bool includesCurrentUser;
+}
+
+class _PendingReaction {
+  const _PendingReaction({
     required this.message,
     required this.content,
   });
@@ -97,6 +130,16 @@ class _StickerPreset {
   final String label;
 }
 
+class _ReactionPreset {
+  const _ReactionPreset({
+    required this.emoji,
+    required this.label,
+  });
+
+  final String emoji;
+  final String label;
+}
+
 class BackchatHomePage extends StatefulWidget {
   const BackchatHomePage({super.key});
 
@@ -111,6 +154,16 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   static const Duration _contactRefreshInterval = Duration(seconds: 8);
   static const Duration _updateCheckInterval = Duration(minutes: 30);
   static const String _plainTextTransportMode = 'plaintext_v1';
+  static final RegExp _messageUrlPattern =
+      RegExp(r'https?://[^\s<>()]+', caseSensitive: false);
+  static const List<_ReactionPreset> _reactionPresets = <_ReactionPreset>[
+    _ReactionPreset(emoji: '\u{1F44D}', label: 'Thumbs up'),
+    _ReactionPreset(emoji: '\u{2764}\u{FE0F}', label: 'Love'),
+    _ReactionPreset(emoji: '\u{1F602}', label: 'Laugh'),
+    _ReactionPreset(emoji: '\u{1F604}', label: 'Smile'),
+    _ReactionPreset(emoji: '\u{1F622}', label: 'Cry'),
+    _ReactionPreset(emoji: '\u{1F389}', label: 'Celebrate'),
+  ];
   static const List<_StickerPreset> _stickerPresets = <_StickerPreset>[
     _StickerPreset(emoji: '😀', label: 'Smile'),
     _StickerPreset(emoji: '😂', label: 'Laugh'),
@@ -137,9 +190,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final CallService _callService = CallService();
   final GiphyService _giphyService = GiphyService();
   final KeyboardMediaService _keyboardMediaService = KeyboardMediaService();
+  final LinkPreviewService _linkPreviewService = LinkPreviewService();
+  final LocalMediaLibraryService _localMediaLibraryService =
+      LocalMediaLibraryService();
   final MediaAttachmentService _mediaAttachmentService =
       MediaAttachmentService();
   final BackchatApiClient _profileApi = BackchatApiService();
+  final SocialEmbedService _socialEmbedService = const SocialEmbedService();
+  final UpdatePromptService _updatePromptService = UpdatePromptService();
   final FocusNode _messageFocusNode = FocusNode();
   final ScrollController _conversationScrollController = ScrollController();
 
@@ -180,8 +238,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   DateTime? _lastUpdateCheckAt;
   AppUpdateCheckResult? _availableUpdate;
   String? _notifiedUpdateKey;
-  String? _shownUpdateDialogKey;
   bool _isDraggingVisualMedia = false;
+  double? _mediaUploadProgress;
+  bool _isUploadingMedia = false;
   String _installedVersionLabel = '';
 
   SecretKey? _sharedSecret;
@@ -230,7 +289,6 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appLifecycleState = state;
     if (state == AppLifecycleState.resumed) {
-      _shownUpdateDialogKey = null;
       unawaited(_appNotificationService.cancelIncomingCallNotification());
       unawaited(_handleAppResumed());
       if (_retryStartupUpdateOnResume) {
@@ -240,8 +298,6 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       } else {
         unawaited(_checkForStartupUpdate());
       }
-    } else {
-      _shownUpdateDialogKey = null;
     }
   }
 
@@ -710,6 +766,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         case AppUpdateStatus.upToDate:
           _availableUpdate = null;
           _notifiedUpdateKey = null;
+          await _updatePromptService.clear();
           await _appNotificationService.cancelUpdateNotification();
           break;
         case AppUpdateStatus.unavailable:
@@ -755,12 +812,13 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       );
     }
 
-    if (_appLifecycleState != AppLifecycleState.resumed ||
-        _shownUpdateDialogKey == updateKey) {
+    if (_appLifecycleState != AppLifecycleState.resumed) {
       return;
     }
-
-    _shownUpdateDialogKey = updateKey;
+    if (!await _updatePromptService.shouldPromptForUpdate(updateKey: updateKey)) {
+      return;
+    }
+    await _updatePromptService.markPromptShown(updateKey: updateKey);
     await _showStartupUpdateDialog(result);
   }
 
@@ -782,6 +840,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         case AppUpdateStatus.autoInstallStarted:
           _availableUpdate = null;
           _notifiedUpdateKey = null;
+          await _updatePromptService.clear();
           await _appNotificationService.cancelUpdateNotification();
           if (result.message.isNotEmpty) {
             _showAuthMessage(result.message);
@@ -811,6 +870,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           _retryStartupUpdateOnResume = false;
           _availableUpdate = null;
           _notifiedUpdateKey = null;
+          await _updatePromptService.clear();
           await _appNotificationService.cancelUpdateNotification();
           if (result.message.isNotEmpty) {
             _showAuthMessage(result.message);
@@ -930,6 +990,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       final List<ChatMessage> newMessages =
           await _messagingService.syncIncoming(currentUser.id);
       if (newMessages.isNotEmpty) {
+        await _autoSaveImagesForMessages(newMessages);
         await _loadContacts();
         await _notifyForIncomingMessages(newMessages);
         await _refreshConversation(scrollToBottom: true);
@@ -945,6 +1006,30 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       }
     } finally {
       _isSyncingMessages = false;
+    }
+  }
+
+  Future<void> _autoSaveImagesForMessages(List<ChatMessage> messages) async {
+    for (final ChatMessage message in messages) {
+      final ChatMessageContent content = await _decodeMessageContent(message);
+      await _tryAutoSaveImageMessage(message: message, content: content);
+    }
+  }
+
+  Future<void> _tryAutoSaveImageMessage({
+    required ChatMessage message,
+    required ChatMessageContent content,
+  }) async {
+    if (content.kind != ChatMessageContentKind.image) {
+      return;
+    }
+    try {
+      await _localMediaLibraryService.saveImageMessage(
+        messageId: message.localId,
+        content: content,
+      );
+    } catch (_) {
+      // Keep chat flow resilient if the local Pictures folder is unavailable.
     }
   }
 
@@ -1101,15 +1186,37 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
     final List<ChatMessage> messages =
         await _messagingService.listForPair(currentUser.id, selectedContact.id);
-    final List<_ConversationEntry> renderedConversation =
-        <_ConversationEntry>[];
+    final List<_ConversationEntry> messageEntries = <_ConversationEntry>[];
+    final Map<String, List<_PendingReaction>> reactionsByTarget =
+        <String, List<_PendingReaction>>{};
 
     for (final ChatMessage message in messages) {
       final ChatMessageContent content = await _decodeMessageContent(message);
-      renderedConversation.add(
-        _ConversationEntry(message: message, content: content),
-      );
+      if (content.kind == ChatMessageContentKind.reaction &&
+          content.hasReferenceId &&
+          content.hasText) {
+        reactionsByTarget.putIfAbsent(
+          content.referenceId,
+          () => <_PendingReaction>[],
+        ).add(_PendingReaction(message: message, content: content));
+        continue;
+      }
+      messageEntries.add(_ConversationEntry(message: message, content: content));
     }
+
+    final List<_ConversationEntry> renderedConversation = messageEntries
+        .map(
+          (_ConversationEntry entry) => _ConversationEntry(
+            message: entry.message,
+            content: entry.content,
+            reactions: _buildReactionSummaries(
+              reactionsByTarget[_messageReactionTargetId(entry.message)] ??
+                  const <_PendingReaction>[],
+              currentUserId: currentUser.id,
+            ),
+          ),
+        )
+        .toList();
 
     if (!mounted ||
         _currentUser?.id != currentUser.id ||
@@ -1175,6 +1282,42 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     } catch (_) {
       return ChatMessageContent.text('[Unable to read message]');
     }
+  }
+
+  List<_MessageReactionSummary> _buildReactionSummaries(
+    List<_PendingReaction> reactions, {
+    required String currentUserId,
+  }) {
+    final Map<String, Set<String>> sendersByEmoji = <String, Set<String>>{};
+    for (final _PendingReaction reaction in reactions) {
+      if (!reaction.content.hasText) {
+        continue;
+      }
+      sendersByEmoji.putIfAbsent(
+        reaction.content.text,
+        () => <String>{},
+      ).add(reaction.message.fromUserId);
+    }
+    return sendersByEmoji.entries
+        .map(
+          (MapEntry<String, Set<String>> entry) => _MessageReactionSummary(
+            emoji: entry.key,
+            count: entry.value.length,
+            includesCurrentUser: entry.value.contains(currentUserId),
+          ),
+        )
+        .toList();
+  }
+
+  String _messageReactionTargetId(ChatMessage message) {
+    final String rawValue =
+        '${message.fromUserId}|${message.toUserId}|${message.cipherText}';
+    int hash = 0x811c9dc5;
+    for (final int byte in utf8.encode(rawValue)) {
+      hash ^= byte;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return 'message:${hash.toUnsigned(32).toRadixString(16).padLeft(8, '0')}';
   }
 
   String? _tryDecodePlainTextTransportPayload(String payload) {
@@ -2129,6 +2272,26 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _messageController.clear();
   }
 
+  void _setMediaUploadProgress(double? progress) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _mediaUploadProgress = progress?.clamp(0.0, 1.0);
+      _isUploadingMedia = progress != null && progress < 1;
+    });
+  }
+
+  void _clearMediaUploadProgress() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _mediaUploadProgress = null;
+      _isUploadingMedia = false;
+    });
+  }
+
   Future<ChatMessageContent> _prepareContentForSend(
     ChatMessageContent content,
   ) async {
@@ -2161,6 +2324,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         content: content,
         mimeType: mimeType,
       ),
+      onProgress: _setMediaUploadProgress,
     );
 
     return switch (content.kind) {
@@ -2192,7 +2356,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return '$prefix-${DateTime.now().toUtc().microsecondsSinceEpoch}.$extension';
   }
 
-  Future<void> _sendContentMessage(ChatMessageContent content) async {
+  Future<void> _sendContentMessage(
+    ChatMessageContent content, {
+    bool scrollToBottom = true,
+  }) async {
     final AppUser? currentUser = _currentUser;
     final AppUser? selectedContact = _selectedContact;
     if (currentUser == null || selectedContact == null) {
@@ -2201,12 +2368,21 @@ class _BackchatHomePageState extends State<BackchatHomePage>
 
     final ChatMessageContent preparedContent;
     try {
+      if (_messagingService.isRemoteTransportEnabled &&
+          (content.kind == ChatMessageContentKind.image ||
+              content.kind == ChatMessageContentKind.gif) &&
+          content.hasUrl &&
+          _keyboardMediaService.isDataUrl(content.url)) {
+        _setMediaUploadProgress(0);
+      }
       preparedContent = await _prepareContentForSend(content);
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
+      _clearMediaUploadProgress();
       return;
     } catch (_) {
       _showAuthMessage('Could not prepare that GIF or image right now.');
+      _clearMediaUploadProgress();
       return;
     }
 
@@ -2217,6 +2393,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _showAuthMessage(
         'That image or GIF is too large to send directly. Pick a smaller file or share a link instead.',
       );
+      _clearMediaUploadProgress();
       return;
     }
     if (!_messagingService.isRemoteTransportEnabled &&
@@ -2224,6 +2401,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _showAuthMessage(
         'That image or GIF is too large to send in offline mode. Sign in to the Backchat server or choose a smaller file.',
       );
+      _clearMediaUploadProgress();
       return;
     }
 
@@ -2232,6 +2410,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       cipherText = payload;
     } else {
       if (_sharedSecret == null) {
+        _clearMediaUploadProgress();
         return;
       }
       final List<int> aad = _buildMessageAad(
@@ -2264,13 +2443,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       await _messagingService.send(message);
     } on BackchatApiException catch (e) {
       _showAuthMessage(e.message);
+      _clearMediaUploadProgress();
       return;
     } catch (_) {
       _showAuthMessage('Could not send message right now.');
+      _clearMediaUploadProgress();
       return;
     }
 
-    await _refreshConversation(scrollToBottom: true);
+    _clearMediaUploadProgress();
+    await _tryAutoSaveImageMessage(message: message, content: content);
+    await _refreshConversation(scrollToBottom: scrollToBottom);
     await _syncMessages(showErrors: false);
   }
 
@@ -2346,6 +2529,27 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
     await _sendStickerMessage(selected);
+  }
+
+  Future<void> _sendReactionForEntry(
+    _ConversationEntry entry,
+    _ReactionPreset reaction,
+  ) async {
+    final bool alreadyReacted = entry.reactions.any(
+      (_MessageReactionSummary summary) =>
+          summary.emoji == reaction.emoji && summary.includesCurrentUser,
+    );
+    if (alreadyReacted) {
+      _showAuthMessage('You already reacted with ${reaction.label}.');
+      return;
+    }
+    await _sendContentMessage(
+      ChatMessageContent.reaction(
+        emoji: reaction.emoji,
+        targetId: _messageReactionTargetId(entry.message),
+      ),
+      scrollToBottom: false,
+    );
   }
 
   Future<void> _sendKeyboardInsertedContent(
@@ -3300,6 +3504,33 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       icon: const Icon(Icons.send),
       label: const Text('Send'),
     );
+    final Widget sendButtonWithProgress = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: <Widget>[
+        if (_mediaUploadProgress != null) ...<Widget>[
+          SizedBox(
+            width: 150,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  _isUploadingMedia
+                      ? 'Uploading ${(100 * (_mediaUploadProgress ?? 0)).round()}%'
+                      : 'Upload complete',
+                  textAlign: TextAlign.right,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(value: _mediaUploadProgress),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        sendButton,
+      ],
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
@@ -3316,7 +3547,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                     const SizedBox(width: 8),
                     emojiButton,
                     const SizedBox(width: 8),
-                    sendButton,
+                    sendButtonWithProgress,
                   ],
                 ),
               ],
@@ -3329,7 +3560,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 const SizedBox(width: 2),
                 emojiButton,
                 const SizedBox(width: 2),
-                sendButton,
+                sendButtonWithProgress,
               ],
             ),
     );
@@ -4148,17 +4379,74 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 child: Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  child: _buildMessageContent(
-                    entry.content,
-                    isMine: isMine,
-                  ),
+                  child: _buildMessageContent(entry, isMine: isMine),
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
-                _formatMessageTimestamp(entry.message.sentAt),
-                style: theme.textTheme.bodySmall,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    _formatMessageTimestamp(entry.message.sentAt),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(width: 4),
+                  PopupMenuButton<_ReactionPreset>(
+                    tooltip: 'React',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onSelected: (_ReactionPreset reaction) =>
+                        _sendReactionForEntry(entry, reaction),
+                    itemBuilder: (BuildContext context) {
+                      return _reactionPresets
+                          .map(
+                            (_ReactionPreset reaction) =>
+                                PopupMenuItem<_ReactionPreset>(
+                              value: reaction,
+                              child: Text(
+                                '${reaction.emoji} ${reaction.label}',
+                              ),
+                            ),
+                          )
+                          .toList();
+                    },
+                    child: Icon(
+                      Icons.add_reaction_outlined,
+                      size: 18,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
+              if (entry.reactions.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: entry.reactions
+                      .map(
+                        (_MessageReactionSummary reaction) => DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: reaction.includesCurrentUser
+                                ? theme.colorScheme.secondaryContainer
+                                : theme.colorScheme.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            child: Text('${reaction.emoji} ${reaction.count}'),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
             ],
           ),
         ),
@@ -4167,11 +4455,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   Widget _buildMessageContent(
-    ChatMessageContent content, {
+    _ConversationEntry entry, {
     required bool isMine,
   }) {
+    final ChatMessageContent content = entry.content;
     return switch (content.kind) {
-      ChatMessageContentKind.text => SelectableText(content.text),
+      ChatMessageContentKind.text => _buildTextMessageContent(
+          content,
+          isMine: isMine,
+        ),
       ChatMessageContentKind.sticker => Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4186,6 +4478,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             ],
           ],
         ),
+      ChatMessageContentKind.reaction => const SizedBox.shrink(),
       ChatMessageContentKind.background => _buildBackgroundShareCard(content),
       ChatMessageContentKind.image || ChatMessageContentKind.gif => Column(
           mainAxisSize: MainAxisSize.min,
@@ -4201,8 +4494,277 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       ChatMessageContentKind.video ||
       ChatMessageContentKind.audio ||
       ChatMessageContentKind.file =>
-        _buildLinkedMediaCard(content, isMine: isMine),
+        _buildStructuredMediaContent(content, isMine: isMine),
     };
+  }
+
+  Widget _buildTextMessageContent(
+    ChatMessageContent content, {
+    required bool isMine,
+  }) {
+    final Uri? firstUrl = _firstUrlFromText(content.text);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _buildLinkifiedText(content.text),
+        if (firstUrl != null) ...<Widget>[
+          const SizedBox(height: 8),
+          _buildAutoPreviewForUrl(firstUrl, isMine: isMine),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildStructuredMediaContent(
+    ChatMessageContent content, {
+    required bool isMine,
+  }) {
+    final SocialEmbedDescriptor? socialEmbed =
+        _socialEmbedService.resolve(content.url);
+    if (socialEmbed != null) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SocialEmbedCard(descriptor: socialEmbed),
+          if (content.hasText) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(content.text),
+          ],
+          const SizedBox(height: 8),
+          _buildLinkifiedText(content.url),
+        ],
+      );
+    }
+    if (content.kind == ChatMessageContentKind.audio &&
+        _linkPreviewService.isDirectAudioUrl(content.url)) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          InlineAudioPlayer(
+            url: content.url,
+            title: content.hasText
+                ? content.text
+                : (content.hasLabel ? content.label : ''),
+          ),
+          if (content.hasUrl) ...<Widget>[
+            const SizedBox(height: 8),
+            _buildLinkifiedText(content.url),
+          ],
+        ],
+      );
+    }
+    if (content.kind == ChatMessageContentKind.video &&
+        _linkPreviewService.isDirectVideoUrl(content.url)) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          InlineVideoPlayer(url: content.url),
+          if (content.hasText) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(content.text),
+          ],
+          if (content.hasUrl) ...<Widget>[
+            const SizedBox(height: 8),
+            _buildLinkifiedText(content.url),
+          ],
+        ],
+      );
+    }
+    return _buildLinkedMediaCard(content, isMine: isMine);
+  }
+
+  Widget _buildLinkifiedText(String text) {
+    final ThemeData theme = Theme.of(context);
+    final List<InlineSpan> spans = <InlineSpan>[];
+    int cursor = 0;
+    for (final RegExpMatch match in _messageUrlPattern.allMatches(text)) {
+      final String normalized = _normalizeMatchedUrl(match.group(0) ?? '');
+      if (normalized.isEmpty) {
+        continue;
+      }
+      final int linkEnd = match.start + normalized.length;
+      if (match.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, match.start)));
+      }
+      spans.add(
+        TextSpan(
+          text: normalized,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.primary,
+            decoration: TextDecoration.underline,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () => unawaited(_openExternalUrl(normalized)),
+        ),
+      );
+      if (linkEnd < match.end) {
+        spans.add(TextSpan(text: text.substring(linkEnd, match.end)));
+      }
+      cursor = match.end;
+    }
+
+    if (spans.isEmpty) {
+      return SelectableText(text);
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor)));
+    }
+    return SelectionArea(
+      child: RichText(
+        text: TextSpan(
+          style: theme.textTheme.bodyMedium,
+          children: spans,
+        ),
+      ),
+    );
+  }
+
+  Uri? _firstUrlFromText(String text) {
+    for (final RegExpMatch match in _messageUrlPattern.allMatches(text)) {
+      final String normalized = _normalizeMatchedUrl(match.group(0) ?? '');
+      final Uri? uri = Uri.tryParse(normalized);
+      if (uri != null &&
+          uri.hasScheme &&
+          (uri.scheme == 'http' || uri.scheme == 'https')) {
+        return uri;
+      }
+    }
+    return null;
+  }
+
+  String _normalizeMatchedUrl(String rawMatch) {
+    return rawMatch.trim().replaceAll(RegExp(r'[.,!?;:]+$'), '');
+  }
+
+  Widget _buildAutoPreviewForUrl(
+    Uri url, {
+    required bool isMine,
+  }) {
+    final String rawUrl = url.toString();
+    final SocialEmbedDescriptor? socialEmbed = _socialEmbedService.resolve(
+      rawUrl,
+    );
+    if (socialEmbed != null) {
+      return SocialEmbedCard(descriptor: socialEmbed);
+    }
+    if (_linkPreviewService.isDirectAudioUrl(rawUrl)) {
+      return InlineAudioPlayer(url: rawUrl, title: '');
+    }
+    if (_linkPreviewService.isDirectVideoUrl(rawUrl)) {
+      return InlineVideoPlayer(url: rawUrl);
+    }
+    return _buildUrlPreviewCard(rawUrl, isMine: isMine);
+  }
+
+  Widget _buildUrlPreviewCard(
+    String rawUrl, {
+    required bool isMine,
+    String? titleOverride,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return FutureBuilder<LinkPreviewData?>(
+      future: _linkPreviewService.fetchPreview(rawUrl),
+      builder: (
+        BuildContext context,
+        AsyncSnapshot<LinkPreviewData?> snapshot,
+      ) {
+        final Uri? uri = Uri.tryParse(rawUrl);
+        final LinkPreviewData? preview = snapshot.data;
+        final String fallbackTitle = titleOverride?.trim().isNotEmpty == true
+            ? titleOverride!.trim()
+            : (uri?.host.isNotEmpty == true ? uri!.host : rawUrl);
+        final String title = preview?.title.trim().isNotEmpty == true
+            ? preview!.title
+            : fallbackTitle;
+        final String subtitle = preview?.siteName.trim().isNotEmpty == true
+            ? preview!.siteName
+            : (uri?.host ?? '');
+        final String description = preview?.description ?? '';
+        final String imageUrl = preview?.imageUrl ?? '';
+
+        return InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => _openExternalUrl(rawUrl),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 300),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface.withValues(
+                alpha: isMine ? 0.4 : 0.8,
+              ),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (imageUrl.trim().isNotEmpty)
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(14),
+                    ),
+                    child: SizedBox(
+                      height: 120,
+                      width: double.infinity,
+                      child: Image.network(
+                        imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.titleSmall,
+                            ),
+                            if (subtitle.isNotEmpty) ...<Widget>[
+                              const SizedBox(height: 2),
+                              Text(
+                                subtitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                            if (description.trim().isNotEmpty) ...<Widget>[
+                              const SizedBox(height: 6),
+                              Text(
+                                description,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.open_in_new),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Widget _buildBackgroundShareCard(ChatMessageContent content) {
@@ -4330,6 +4892,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     ChatMessageContent content, {
     required bool isMine,
   }) {
+    if (content.hasUrl && content.kind != ChatMessageContentKind.file) {
+      return _buildUrlPreviewCard(
+        content.url,
+        isMine: isMine,
+        titleOverride: content.hasText
+            ? content.text
+            : (content.hasLabel ? content.label : null),
+      );
+    }
     final ThemeData theme = Theme.of(context);
     final (IconData, String) meta = switch (content.kind) {
       ChatMessageContentKind.video => (Icons.play_circle_outline, 'Video'),

@@ -5,6 +5,7 @@ enum ChatMessageContentKind {
   image,
   gif,
   sticker,
+  reaction,
   background,
   video,
   audio,
@@ -17,6 +18,7 @@ class ChatMessageContent {
     this.text = '',
     this.url = '',
     this.label = '',
+    this.referenceId = '',
   });
 
   static const String transportMode = 'message_payload_v1';
@@ -25,6 +27,7 @@ class ChatMessageContent {
   final String text;
   final String url;
   final String label;
+  final String referenceId;
 
   factory ChatMessageContent.text(String value) {
     return ChatMessageContent(
@@ -63,6 +66,17 @@ class ChatMessageContent {
       kind: ChatMessageContentKind.sticker,
       text: emoji,
       label: label,
+    );
+  }
+
+  factory ChatMessageContent.reaction({
+    required String emoji,
+    required String targetId,
+  }) {
+    return ChatMessageContent(
+      kind: ChatMessageContentKind.reaction,
+      text: emoji,
+      referenceId: targetId,
     );
   }
 
@@ -115,6 +129,7 @@ class ChatMessageContent {
   bool get hasUrl => url.trim().isNotEmpty;
   bool get hasText => text.trim().isNotEmpty;
   bool get hasLabel => label.trim().isNotEmpty;
+  bool get hasReferenceId => referenceId.trim().isNotEmpty;
 
   String get previewText {
     return switch (kind) {
@@ -123,6 +138,8 @@ class ChatMessageContent {
       ChatMessageContentKind.gif => hasText ? 'GIF: $text' : 'GIF',
       ChatMessageContentKind.sticker =>
         hasLabel ? 'Sticker: $label' : 'Sticker',
+      ChatMessageContentKind.reaction =>
+        hasText ? 'Reacted with $text' : 'Reaction',
       ChatMessageContentKind.background =>
         hasLabel ? 'Background: $label' : 'Shared background',
       ChatMessageContentKind.video => hasText ? 'Video: $text' : 'Video',
@@ -145,6 +162,7 @@ class ChatMessageContent {
       if (text.isNotEmpty) 'text': text,
       if (url.isNotEmpty) 'url': url,
       if (label.isNotEmpty) 'label': label,
+      if (referenceId.isNotEmpty) 'referenceId': referenceId,
     };
   }
 
@@ -161,6 +179,7 @@ class ChatMessageContent {
       text: json['text']?.toString() ?? '',
       url: json['url']?.toString() ?? '',
       label: json['label']?.toString() ?? '',
+      referenceId: json['referenceId']?.toString() ?? '',
     );
   }
 

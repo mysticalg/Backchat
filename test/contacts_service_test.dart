@@ -76,6 +76,7 @@ class _DisabledApiClient implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) {
     throw UnimplementedError();
   }

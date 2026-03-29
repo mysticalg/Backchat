@@ -21,6 +21,11 @@ dependencies:
   file_selector: ^1.1.0
   desktop_drop: ^0.7.0
   image: ^4.8.0
+  html: ^0.15.6
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  flutter_inappwebview: ^6.1.5
 
 dev_dependencies:
   flutter_test:

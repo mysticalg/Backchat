@@ -86,6 +86,7 @@ class _FailingConfiguredApiClient implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     throw const BackchatApiException(status: 'api_error', message: 'offline');
   }
@@ -209,6 +210,7 @@ class _SuccessfulSocialOAuthApiClient implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     throw UnimplementedError();
   }
@@ -378,6 +380,7 @@ class _SuccessfulUsernameApiClient implements BackchatApiClient {
     required Uint8List bytes,
     required String mimeType,
     String? filename,
+    void Function(double progress)? onProgress,
   }) async {
     throw UnimplementedError();
   }
