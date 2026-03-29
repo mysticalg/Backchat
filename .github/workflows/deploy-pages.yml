@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - assets/**
       - site/**
       - .github/workflows/deploy-pages.yml
   release:
