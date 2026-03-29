@@ -15,6 +15,7 @@ void main() {
 
     expect(settings.contextMessageCount, 6);
     expect(settings.ollama.baseUrl, 'http://127.0.0.1:11434');
+    expect(settings.ollama.timeoutSeconds, 30);
     expect(settings.remote.enabled, isFalse);
   });
 
@@ -29,6 +30,7 @@ void main() {
         handle: 'local-news',
         baseUrl: 'http://localhost:11434',
         model: 'llama3.2',
+        timeoutSeconds: 300,
       ),
       remote: LlmProviderConfig(
         kind: LlmProviderKind.openAiCompatible,
@@ -47,8 +49,22 @@ void main() {
     expect(restored.defaultFactCheckHandle, 'local-news');
     expect(restored.ollama.enabled, isTrue);
     expect(restored.ollama.model, 'llama3.2');
+    expect(restored.ollama.timeoutSeconds, 300);
     expect(restored.remote.enabled, isTrue);
     expect(restored.remote.baseUrl, 'https://api.example.com/v1');
     expect(restored.remote.apiKey, 'secret-key');
+  });
+
+  test('clamps saved local timeout to ten minutes', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'llm_settings_v1':
+          '{"ollama":{"kind":"ollama","enabled":true,"baseUrl":"http://127.0.0.1:11434","model":"llama3.2","timeoutSeconds":9999}}',
+    });
+    final LlmSettingsService service = LlmSettingsService();
+
+    final LlmSettings settings = await service.load();
+
+    expect(settings.ollama.timeoutSeconds, 600);
+    expect(settings.ollama.requestTimeout, const Duration(minutes: 10));
   });
 }

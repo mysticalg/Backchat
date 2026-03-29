@@ -1850,12 +1850,21 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _showAuthMessage('Advanced call routing updated.');
   }
 
+  String _llmTimeoutLabel(int seconds) {
+    if (seconds % 60 == 0) {
+      final int minutes = seconds ~/ 60;
+      return minutes == 1 ? '1 minute' : '$minutes minutes';
+    }
+    return seconds == 1 ? '1 second' : '$seconds seconds';
+  }
+
   Future<void> _editLlmSettings() async {
     bool ollamaEnabled = _llmSettings.ollama.enabled;
     bool remoteEnabled = _llmSettings.remote.enabled;
     int contextMessageCount = _llmSettings.contextMessageCount;
     String defaultFactCheckHandle = _llmSettings.defaultFactCheckHandle;
     String ollamaModel = _llmSettings.ollama.model;
+    int ollamaTimeoutSeconds = _llmSettings.ollama.requestTimeout.inSeconds;
     final TextEditingController ollamaHandleController =
         TextEditingController(text: _llmSettings.ollama.handle);
     final TextEditingController ollamaBaseUrlController = TextEditingController(
@@ -1884,6 +1893,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         handle: ollamaHandleController.text.trim(),
         baseUrl: ollamaBaseUrlController.text.trim(),
         model: ollamaModel.trim(),
+        timeoutSeconds: ollamaTimeoutSeconds,
       );
       final LlmProviderConfig nextRemote = _llmSettings.remote.copyWith(
         enabled: remoteEnabled,
@@ -2143,6 +2153,34 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                               label: const Text('Load models'),
                             ),
                           ],
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<int>(
+                          initialValue: ollamaTimeoutSeconds,
+                          decoration: const InputDecoration(
+                            labelText: 'Local model timeout',
+                            helperText: 'Maximum wait for Ollama replies',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const <int>[30, 60, 120, 300, 600]
+                              .map(
+                                (int value) => DropdownMenuItem<int>(
+                                  value: value,
+                                  child: Text(_llmTimeoutLabel(value)),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: !ollamaEnabled
+                              ? null
+                              : (int? value) {
+                                  if (value == null) {
+                                    return;
+                                  }
+                                  setDialogState(() {
+                                    ollamaTimeoutSeconds = value;
+                                    dialogError = null;
+                                  });
+                                },
                         ),
                         const SizedBox(height: 16),
                         const Divider(),

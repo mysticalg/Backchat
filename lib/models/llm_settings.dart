@@ -11,6 +11,7 @@ class LlmProviderConfig {
     this.baseUrl = '',
     this.model = '',
     this.apiKey = '',
+    this.timeoutSeconds = 30,
   });
 
   final LlmProviderKind kind;
@@ -19,17 +20,24 @@ class LlmProviderConfig {
   final String baseUrl;
   final String model;
   final String apiKey;
+  final int timeoutSeconds;
 
   static const LlmProviderConfig defaultOllama = LlmProviderConfig(
     kind: LlmProviderKind.ollama,
     baseUrl: 'http://127.0.0.1:11434',
     handle: 'ollama',
+    timeoutSeconds: 30,
   );
 
   static const LlmProviderConfig defaultRemote = LlmProviderConfig(
     kind: LlmProviderKind.openAiCompatible,
     handle: 'remote',
+    timeoutSeconds: 30,
   );
+
+  Duration get requestTimeout {
+    return Duration(seconds: timeoutSeconds.clamp(1, 600));
+  }
 
   String get normalizedHandle {
     final String explicit = LlmSettings.normalizeMention(handle);
@@ -64,6 +72,7 @@ class LlmProviderConfig {
     String? baseUrl,
     String? model,
     String? apiKey,
+    int? timeoutSeconds,
   }) {
     return LlmProviderConfig(
       kind: kind,
@@ -72,6 +81,7 @@ class LlmProviderConfig {
       baseUrl: baseUrl ?? this.baseUrl,
       model: model ?? this.model,
       apiKey: apiKey ?? this.apiKey,
+      timeoutSeconds: timeoutSeconds ?? this.timeoutSeconds,
     );
   }
 
@@ -82,6 +92,7 @@ class LlmProviderConfig {
       'handle': handle,
       'baseUrl': baseUrl,
       'model': model,
+      'timeoutSeconds': timeoutSeconds,
       if (apiKey.isNotEmpty) 'apiKey': apiKey,
     };
   }
@@ -95,6 +106,10 @@ class LlmProviderConfig {
       (LlmProviderKind value) => value.name == rawKind,
       orElse: () => fallbackKind,
     );
+    final Object? timeoutValue = json['timeoutSeconds'];
+    final int parsedTimeout = timeoutValue is int
+        ? timeoutValue
+        : int.tryParse(timeoutValue?.toString() ?? '') ?? 30;
     return LlmProviderConfig(
       kind: kind,
       enabled: json['enabled'] == true,
@@ -102,6 +117,7 @@ class LlmProviderConfig {
       baseUrl: json['baseUrl']?.toString() ?? '',
       model: json['model']?.toString() ?? '',
       apiKey: json['apiKey']?.toString() ?? '',
+      timeoutSeconds: parsedTimeout.clamp(1, 600),
     );
   }
 }

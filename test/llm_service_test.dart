@@ -54,6 +54,44 @@ void main() {
     expect(models, <String>['llama3.2', 'mistral']);
   });
 
+  test('uses the configured Ollama timeout for local model replies', () async {
+    final LlmService service = LlmService(
+      client: MockClient((http.Request request) async {
+        if (request.url.path == '/api/chat') {
+          await Future<void>.delayed(const Duration(seconds: 2));
+        }
+        return http.Response(
+          jsonEncode(<String, dynamic>{
+            'message': <String, String>{'content': 'late'},
+          }),
+          200,
+        );
+      }),
+    );
+
+    await expectLater(
+      service.generateReply(
+        provider: const LlmProviderConfig(
+          kind: LlmProviderKind.ollama,
+          enabled: true,
+          handle: 'ollama-3',
+          baseUrl: 'http://127.0.0.1:11434',
+          model: 'llama3.2',
+          timeoutSeconds: 1,
+        ),
+        prompt: 'hello',
+        contextLines: const <LlmContextLine>[],
+      ),
+      throwsA(
+        isA<LlmServiceException>().having(
+          (LlmServiceException e) => e.message,
+          'message',
+          contains('1 second'),
+        ),
+      ),
+    );
+  });
+
   test('includes fetched news context in Ollama fact-check prompts', () async {
     String capturedBody = '';
     final LlmService service = LlmService(

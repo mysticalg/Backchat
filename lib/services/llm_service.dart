@@ -229,10 +229,10 @@ class LlmService {
               ],
             }),
           )
-          .timeout(_requestTimeout);
+          .timeout(provider.requestTimeout);
     } on TimeoutException {
-      throw const LlmServiceException(
-        'The Ollama model took too long to respond.',
+      throw LlmServiceException(
+        'The Ollama model took longer than ${_formatDurationLabel(provider.requestTimeout)} to respond.',
       );
     } catch (_) {
       throw const LlmServiceException(
@@ -591,5 +591,20 @@ class LlmService {
       // Ignore malformed error bodies.
     }
     return 'The remote model returned HTTP $statusCode.';
+  }
+
+  String _formatDurationLabel(Duration duration) {
+    final int totalSeconds = duration.inSeconds;
+    if (totalSeconds % 60 == 0) {
+      final int minutes = totalSeconds ~/ 60;
+      if (minutes == 1) {
+        return '1 minute';
+      }
+      return '$minutes minutes';
+    }
+    if (totalSeconds == 1) {
+      return '1 second';
+    }
+    return '$totalSeconds seconds';
   }
 }
