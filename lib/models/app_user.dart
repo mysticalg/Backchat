@@ -12,6 +12,8 @@ class AppUser {
     this.quote = '',
     this.status = PresenceStatus.online,
     this.lastSeenAt,
+    this.isBot = false,
+    this.botHandle = '',
   });
 
   final String id;
@@ -22,6 +24,8 @@ class AppUser {
   final String quote;
   final PresenceStatus status;
   final DateTime? lastSeenAt;
+  final bool isBot;
+  final String botHandle;
 
   AppUser copyWith({
     String? displayName,
@@ -31,6 +35,8 @@ class AppUser {
     PresenceStatus? status,
     DateTime? lastSeenAt,
     bool clearLastSeenAt = false,
+    bool? isBot,
+    String? botHandle,
   }) {
     return AppUser(
       id: id,
@@ -41,6 +47,8 @@ class AppUser {
       quote: quote ?? this.quote,
       status: status ?? this.status,
       lastSeenAt: clearLastSeenAt ? null : (lastSeenAt ?? this.lastSeenAt),
+      isBot: isBot ?? this.isBot,
+      botHandle: botHandle ?? this.botHandle,
     );
   }
 }

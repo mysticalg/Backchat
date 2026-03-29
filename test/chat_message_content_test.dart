@@ -36,6 +36,24 @@ void main() {
     expect(decoded.referenceId, 'message:abcd1234');
   });
 
+  test('round-trips assistant payloads with trigger references', () {
+    final ChatMessageContent original = ChatMessageContent.assistant(
+      text: 'I checked the thread.',
+      label: 'Atlas',
+      referenceId: 'local:message:1',
+    );
+
+    final ChatMessageContent? decoded =
+        ChatMessageContent.tryFromTransportPayload(
+      original.toTransportPayload(),
+    );
+
+    expect(decoded, isNotNull);
+    expect(decoded!.kind, ChatMessageContentKind.assistant);
+    expect(decoded.label, 'Atlas');
+    expect(decoded.referenceId, 'local:message:1');
+  });
+
   test('builds useful previews for non-text messages', () {
     expect(
       ChatMessageContent.sticker(

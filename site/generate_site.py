@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
@@ -281,6 +282,13 @@ def copy_static_file(name: str) -> None:
     source = SITE_DIR / name
     target = OUTPUT_DIR / name
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def copy_static_dir(name: str) -> None:
+    source = ROOT / name
+    target = OUTPUT_DIR / name
+    if source.exists():
+        shutil.copytree(source, target, dirs_exist_ok=True)
 
 
 def privacy_body() -> str:
@@ -606,6 +614,7 @@ def main() -> None:
 </urlset>
 """
     (OUTPUT_DIR / "sitemap.xml").write_text(sitemap, encoding="utf-8")
+    copy_static_dir("assets")
 
 
 if __name__ == "__main__":

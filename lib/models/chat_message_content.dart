@@ -40,11 +40,13 @@ class ChatMessageContent {
   factory ChatMessageContent.assistant({
     required String text,
     String label = '',
+    String referenceId = '',
   }) {
     return ChatMessageContent(
       kind: ChatMessageContentKind.assistant,
       text: text,
       label: label,
+      referenceId: referenceId,
     );
   }
 

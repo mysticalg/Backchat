@@ -1,5 +1,9 @@
 # Backchat
 
+GitHub Pages: [mysticalg.github.io/Backchat](https://mysticalg.github.io/Backchat/)
+
+Live page: [backchatapp.co.uk](https://backchatapp.co.uk/)
+
 Backchat is a cross-platform encrypted messaging app scaffold targeting:
 
 - macOS
@@ -7,8 +11,6 @@ Backchat is a cross-platform encrypted messaging app scaffold targeting:
 - Linux
 - Android
 - iOS (optional from the same codebase)
-
-Live page: [backchatapp.co.uk](https://backchatapp.co.uk/)
 
 It includes:
 
@@ -22,6 +24,18 @@ It includes:
 - One-to-one voice/video calling with advanced direct/VPN routing controls
 - Desktop tray integration for messenger-style quick access
 - Starter packaging commands for `.exe`, `.dmg`, Linux bundles, and Android artifacts
+
+## Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/backchat-desktop-signin.png" alt="Backchat desktop first-run sign-in screen" width="31%" />
+  <img src="assets/screenshots/backchat-tablet-signin.png" alt="Backchat tablet first-run sign-in screen" width="31%" />
+  <img src="assets/screenshots/backchat-mobile-signin.png" alt="Backchat mobile first-run sign-in screen" width="31%" />
+</p>
+
+<p align="center">
+  Desktop, tablet, and mobile first-run views from the same Flutter codebase.
+</p>
 
 > **Important platform/API constraint**
 > Directly relaying encrypted messages *through Facebook Messenger* from a third-party app is generally not available for consumer accounts via public APIs. This scaffold uses provider OAuth identity and profile/contact data where legal/available, then sends encrypted messages through Backchat's own transport.
@@ -61,8 +75,9 @@ flutter build windows --release
 
 To package a proper Windows installer locally with Inno Setup:
 
-```bash
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.1.0+12 /DMyBuildDir="build\windows\x64\runner\Release" /DMyOutputDir="." windows\installer\backchat.iss
+```powershell
+$appVersion = ((Select-String -Path pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value -replace "'", '').Trim()
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$appVersion /DMyBuildDir="build\windows\x64\runner\Release" /DMyOutputDir="." windows\installer\backchat.iss
 ```
 
 The GitHub release workflow now publishes both a Windows installer EXE and a portable ZIP.
@@ -81,9 +96,10 @@ If those variables are present, the Windows workflow signs both
 variables and run:
 
 ```powershell
+$appVersion = ((Select-String -Path pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value -replace "'", '').Trim()
 .\scripts\windows-code-sign.ps1 -Files @(
   "build/windows/x64/runner/Release/backchat.exe",
-  "backchat-windows-x64-0.1.0+12-setup.exe"
+  "backchat-windows-x64-$appVersion-setup.exe"
 )
 ```
 
@@ -159,9 +175,14 @@ Recommended first use:
 
 ## GitHub Actions build pipeline
 
-This repo now includes a manual GitHub Actions workflow at `.github/workflows/build-artifacts.yml`.
+This repo now includes a GitHub Actions workflow at `.github/workflows/build-artifacts.yml`.
 
-To run it:
+When `pubspec.yaml` changes on `main`, the workflow automatically builds
+Windows, macOS, Linux, and Android artifacts. If all four builds pass, it
+updates the matching GitHub Release and the GitHub Pages download site refreshes
+from that latest release automatically.
+
+To run it manually:
 
 1. Push your branch to GitHub.
 2. Open **Actions** → **Build Installers and Executables**.

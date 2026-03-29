@@ -8,6 +8,7 @@ class LlmProviderConfig {
     required this.kind,
     this.enabled = false,
     this.handle = '',
+    this.botName = '',
     this.baseUrl = '',
     this.model = '',
     this.apiKey = '',
@@ -17,6 +18,7 @@ class LlmProviderConfig {
   final LlmProviderKind kind;
   final bool enabled;
   final String handle;
+  final String botName;
   final String baseUrl;
   final String model;
   final String apiKey;
@@ -47,6 +49,8 @@ class LlmProviderConfig {
     return LlmSettings.suggestMentionFromModel(model);
   }
 
+  String get userId => 'llm:$normalizedHandle';
+
   bool get isConfigured {
     if (!enabled) {
       return false;
@@ -66,9 +70,33 @@ class LlmProviderConfig {
     return kind == LlmProviderKind.ollama ? 'ollama' : 'remote';
   }
 
+  String get mentionLabel {
+    final String handle = normalizedHandle;
+    if (handle.isNotEmpty) {
+      return '@$handle';
+    }
+    return '@$displayLabel';
+  }
+
+  String get botDisplayName {
+    final String explicit = botName.trim();
+    if (explicit.isNotEmpty) {
+      return explicit;
+    }
+    return mentionLabel;
+  }
+
+  String get botSubtitle {
+    return switch (kind) {
+      LlmProviderKind.ollama => 'Local AI bot',
+      LlmProviderKind.openAiCompatible => 'Remote AI bot',
+    };
+  }
+
   LlmProviderConfig copyWith({
     bool? enabled,
     String? handle,
+    String? botName,
     String? baseUrl,
     String? model,
     String? apiKey,
@@ -78,6 +106,7 @@ class LlmProviderConfig {
       kind: kind,
       enabled: enabled ?? this.enabled,
       handle: handle ?? this.handle,
+      botName: botName ?? this.botName,
       baseUrl: baseUrl ?? this.baseUrl,
       model: model ?? this.model,
       apiKey: apiKey ?? this.apiKey,
@@ -90,6 +119,7 @@ class LlmProviderConfig {
       'kind': kind.name,
       'enabled': enabled,
       'handle': handle,
+      if (botName.isNotEmpty) 'botName': botName,
       'baseUrl': baseUrl,
       'model': model,
       'timeoutSeconds': timeoutSeconds,
@@ -114,6 +144,7 @@ class LlmProviderConfig {
       kind: kind,
       enabled: json['enabled'] == true,
       handle: json['handle']?.toString() ?? '',
+      botName: json['botName']?.toString() ?? '',
       baseUrl: json['baseUrl']?.toString() ?? '',
       model: json['model']?.toString() ?? '',
       apiKey: json['apiKey']?.toString() ?? '',
@@ -185,6 +216,19 @@ class LlmSettings {
     return null;
   }
 
+  LlmProviderConfig? providerForUserId(String userId) {
+    final String normalized = userId.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    for (final LlmProviderConfig provider in configuredProviders) {
+      if (provider.userId == normalized) {
+        return provider;
+      }
+    }
+    return null;
+  }
+
   LlmSettings copyWith({
     LlmProviderConfig? ollama,
     LlmProviderConfig? remote,
@@ -229,7 +273,7 @@ class LlmSettings {
               fallbackKind: LlmProviderKind.openAiCompatible,
             )
           : LlmProviderConfig.defaultRemote,
-      contextMessageCount: parsedCount.clamp(2, 12) as int,
+      contextMessageCount: parsedCount.clamp(2, 12),
       defaultFactCheckHandle: json['defaultFactCheckHandle']?.toString() ?? '',
     );
   }

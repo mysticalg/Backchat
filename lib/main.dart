@@ -27,6 +27,7 @@ import 'services/app_window_service.dart';
 import 'services/backchat_api_service.dart';
 import 'services/call_service.dart';
 import 'services/conversation_background_service.dart';
+import 'services/conversation_bot_service.dart';
 import 'services/conversation_session_service.dart';
 import 'services/contacts_service.dart';
 import 'services/encryption_service.dart';
@@ -193,6 +194,8 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   final AppWindowService _appWindowService = AppWindowService();
   final ConversationBackgroundService _conversationBackgroundService =
       ConversationBackgroundService();
+  final ConversationBotService _conversationBotService =
+      ConversationBotService();
   final ConversationSessionService _conversationSessionService =
       ConversationSessionService();
   final CallService _callService = CallService();
@@ -245,6 +248,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
   ActiveCallState _lastCallState = ActiveCallState.idle;
   String? _selectedConversationBackgroundUrl;
+  Set<String> _enabledConversationBotUserIds = <String>{};
   DateTime? _lastUpdateCheckAt;
   AppUpdateCheckResult? _availableUpdate;
   String? _notifiedUpdateKey;
@@ -377,6 +381,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
     setState(() {
       _selectedContact = null;
+      _enabledConversationBotUserIds = <String>{};
       _conversation.clear();
     });
     unawaited(_rememberSelectedConversation(null));
@@ -414,6 +419,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         _contacts = <AppUser>[];
         _selectedContact = null;
         _selectedConversationBackgroundUrl = null;
+        _enabledConversationBotUserIds = <String>{};
         _conversation.clear();
       });
 
@@ -539,6 +545,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     setState(() {
       _llmSettings = settings;
     });
+    if (_currentUser != null) {
+      await _loadContacts();
+    }
   }
 
   String _formatInstalledVersion(PackageInfo packageInfo) {
@@ -604,6 +613,45 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     // Hook window show/hide in production with window_manager.
   }
 
+  LlmProviderConfig? _providerForUserId(String userId) {
+    return _llmSettings.providerForUserId(userId);
+  }
+
+  AppUser _botContactForProvider(LlmProviderConfig provider) {
+    final List<String> quoteParts = <String>[
+      provider.botSubtitle,
+      provider.mentionLabel,
+    ];
+    return AppUser(
+      id: provider.userId,
+      displayName: provider.botDisplayName,
+      avatarUrl: '',
+      provider: AuthProvider.username,
+      username: provider.normalizedHandle,
+      quote: quoteParts.join(' | '),
+      status: PresenceStatus.online,
+      isBot: true,
+      botHandle: provider.normalizedHandle,
+    );
+  }
+
+  List<AppUser> _mergeContactsWithConfiguredBots(List<AppUser> contacts) {
+    final Map<String, AppUser> mergedById = <String, AppUser>{
+      for (final AppUser contact in contacts) contact.id: contact,
+    };
+    for (final LlmProviderConfig provider in _llmSettings.configuredProviders) {
+      mergedById[provider.userId] = _botContactForProvider(provider);
+    }
+    final List<AppUser> merged = mergedById.values.toList();
+    merged.sort((AppUser a, AppUser b) {
+      if (a.isBot != b.isBot) {
+        return a.isBot ? 1 : -1;
+      }
+      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    });
+    return merged;
+  }
+
   Future<void> _loadContacts() async {
     final AppUser? currentUser = _currentUser;
     if (currentUser == null || _isLoadingContacts) {
@@ -613,8 +661,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     _isLoadingContacts = true;
     try {
       final String? previousSelectedId = _selectedContact?.id;
-      final List<AppUser> contacts =
-          await _contactsService.pullContactsFor(currentUser);
+      final List<AppUser> contacts = _mergeContactsWithConfiguredBots(
+        await _contactsService.pullContactsFor(currentUser),
+      );
 
       AppUser? selectedContact;
       if (previousSelectedId != null) {
@@ -633,6 +682,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         _contacts = contacts;
         _selectedContact = selectedContact;
       });
+      await _loadSelectedConversationBots();
       await _refreshConversation();
       await _syncWindowUnreadCount();
     } finally {
@@ -705,6 +755,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _contacts = <AppUser>[];
       _selectedContact = null;
       _selectedConversationBackgroundUrl = null;
+      _enabledConversationBotUserIds = <String>{};
       _conversation.clear();
     });
 
@@ -1017,6 +1068,23 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       if (newMessages.isNotEmpty) {
         await _autoSaveImagesForMessages(newMessages);
         await _loadContacts();
+        for (final ChatMessage message in newMessages) {
+          final String conversationContactId =
+              message.otherUserId(currentUser.id);
+          final AppUser? conversationContact =
+              _findContactByUserId(conversationContactId);
+          if (conversationContact == null || conversationContact.isBot) {
+            continue;
+          }
+          final ChatMessageContent content =
+              await _decodeMessageContent(message);
+          await _triggerConversationBotsForMessage(
+            message: message,
+            content: content,
+            conversationContact: conversationContact,
+            scrollToBottom: _selectedContact?.id == conversationContact.id,
+          );
+        }
         await _notifyForIncomingMessages(newMessages);
         await _refreshConversation(scrollToBottom: true);
       }
@@ -1062,6 +1130,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     setState(() => _selectedContact = contact);
     await _rememberSelectedConversation(contact);
     await _loadSelectedConversationBackground();
+    await _loadSelectedConversationBots();
     await _refreshConversation(scrollToBottom: true);
     if (mounted && !_useCompactChatLayout(context)) {
       _messageFocusNode.requestFocus();
@@ -1110,6 +1179,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _selectedContact = restoredContact;
     });
     await _loadSelectedConversationBackground();
+    await _loadSelectedConversationBots();
     await _refreshConversation(scrollToBottom: true);
   }
 
@@ -1139,6 +1209,59 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     setState(() {
       _selectedConversationBackgroundUrl = backgroundUrl;
     });
+  }
+
+  AppUser? _findContactByUserId(String userId) {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser?.id == userId) {
+      return currentUser;
+    }
+    for (final AppUser contact in _contacts) {
+      if (contact.id == userId) {
+        return contact;
+      }
+    }
+    final LlmProviderConfig? provider = _providerForUserId(userId);
+    return provider == null ? null : _botContactForProvider(provider);
+  }
+
+  Future<void> _loadSelectedConversationBots() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null ||
+        selectedContact == null ||
+        selectedContact.isBot) {
+      if (mounted) {
+        setState(() {
+          _enabledConversationBotUserIds = <String>{};
+        });
+      }
+      return;
+    }
+
+    final List<String> savedBotUserIds =
+        await _conversationBotService.loadEnabledBotUserIds(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+    );
+    final Set<String> validBotUserIds = savedBotUserIds
+        .where((String userId) => _providerForUserId(userId) != null)
+        .toSet();
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+    setState(() {
+      _enabledConversationBotUserIds = validBotUserIds;
+    });
+    if (validBotUserIds.length != savedBotUserIds.length) {
+      await _conversationBotService.saveEnabledBotUserIds(
+        currentUserId: currentUser.id,
+        contactUserId: selectedContact.id,
+        botUserIds: validBotUserIds,
+      );
+    }
   }
 
   Future<void> _applyConversationBackground(String url) async {
@@ -1184,6 +1307,152 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       _selectedConversationBackgroundUrl = null;
     });
     _showAuthMessage('Conversation background cleared.');
+  }
+
+  Future<void> _editConversationBots() async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null ||
+        selectedContact == null ||
+        selectedContact.isBot) {
+      return;
+    }
+
+    final List<LlmProviderConfig> configuredProviders =
+        _llmSettings.configuredProviders;
+    if (configuredProviders.isEmpty) {
+      _showAuthMessage('Connect an AI model first.');
+      await _editLlmSettings();
+      return;
+    }
+
+    final Set<String>? nextEnabledBotUserIds = await showDialog<Set<String>>(
+      context: context,
+      builder: (BuildContext context) {
+        final Set<String> draftSelection =
+            Set<String>.from(_enabledConversationBotUserIds);
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setDialogState) {
+            final List<LlmProviderConfig> enabledProviders = configuredProviders
+                .where(
+                  (LlmProviderConfig provider) =>
+                      draftSelection.contains(provider.userId),
+                )
+                .toList();
+            return AlertDialog(
+              title: const Text('AI bots in this chat'),
+              content: SizedBox(
+                width: 420,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Added bots reply locally in your conversation with ${selectedContact.displayName}.',
+                      ),
+                      const SizedBox(height: 16),
+                      if (enabledProviders.isNotEmpty) ...<Widget>[
+                        Text(
+                          'Currently in this chat',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: enabledProviders
+                              .map(
+                                (LlmProviderConfig provider) => InputChip(
+                                  avatar: const Icon(Icons.smart_toy_outlined),
+                                  label: Text(provider.botDisplayName),
+                                  onDeleted: () {
+                                    setDialogState(() {
+                                      draftSelection.remove(provider.userId);
+                                    });
+                                  },
+                                ),
+                              )
+                              .toList(),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          onPressed: () {
+                            setDialogState(draftSelection.clear);
+                          },
+                          icon: const Icon(Icons.person_remove_alt_1_outlined),
+                          label: const Text('Remove all from this chat'),
+                        ),
+                        const Divider(height: 24),
+                      ],
+                      Text(
+                        enabledProviders.isEmpty
+                            ? 'Add bots to this chat'
+                            : 'Add or remove bots',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      for (final LlmProviderConfig provider
+                          in configuredProviders)
+                        CheckboxListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          value: draftSelection.contains(provider.userId),
+                          title: Text(provider.botDisplayName),
+                          subtitle: Text(
+                            '${provider.botSubtitle} | ${provider.mentionLabel}',
+                          ),
+                          onChanged: (bool? value) {
+                            setDialogState(() {
+                              if (value == true) {
+                                draftSelection.add(provider.userId);
+                              } else {
+                                draftSelection.remove(provider.userId);
+                              }
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(draftSelection),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (nextEnabledBotUserIds == null) {
+      return;
+    }
+
+    await _conversationBotService.saveEnabledBotUserIds(
+      currentUserId: currentUser.id,
+      contactUserId: selectedContact.id,
+      botUserIds: nextEnabledBotUserIds,
+    );
+    if (!mounted ||
+        _currentUser?.id != currentUser.id ||
+        _selectedContact?.id != selectedContact.id) {
+      return;
+    }
+    setState(() {
+      _enabledConversationBotUserIds = nextEnabledBotUserIds;
+    });
+    _showAuthMessage(
+      nextEnabledBotUserIds.isEmpty
+          ? 'Removed AI bots from this conversation.'
+          : 'Updated AI bots for this conversation.',
+    );
   }
 
   Future<void> _refreshConversation({bool scrollToBottom = false}) async {
@@ -1377,6 +1646,11 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       }
     }
 
+    final LlmProviderConfig? provider = _providerForUserId(userId);
+    if (provider != null) {
+      return provider.botDisplayName;
+    }
+
     return fallback ?? _usernameFromUserId(userId);
   }
 
@@ -1554,6 +1828,10 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   Future<void> _startCall(CallKind kind) async {
     final AppUser? selectedContact = _selectedContact;
     if (selectedContact == null) {
+      return;
+    }
+    if (selectedContact.isBot) {
+      _showAuthMessage('AI bots can chat, but they cannot join calls.');
       return;
     }
 
@@ -1866,11 +2144,15 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     int ollamaTimeoutSeconds = _llmSettings.ollama.requestTimeout.inSeconds;
     final TextEditingController ollamaHandleController =
         TextEditingController(text: _llmSettings.ollama.handle);
+    final TextEditingController ollamaBotNameController =
+        TextEditingController(text: _llmSettings.ollama.botName);
     final TextEditingController ollamaBaseUrlController = TextEditingController(
       text: _llmSettings.ollama.baseUrl,
     );
     final TextEditingController remoteHandleController =
         TextEditingController(text: _llmSettings.remote.handle);
+    final TextEditingController remoteBotNameController =
+        TextEditingController(text: _llmSettings.remote.botName);
     final TextEditingController remoteBaseUrlController = TextEditingController(
       text: _llmSettings.remote.baseUrl,
     );
@@ -1890,6 +2172,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       final LlmProviderConfig nextOllama = _llmSettings.ollama.copyWith(
         enabled: ollamaEnabled,
         handle: ollamaHandleController.text.trim(),
+        botName: ollamaBotNameController.text.trim(),
         baseUrl: ollamaBaseUrlController.text.trim(),
         model: ollamaModel.trim(),
         timeoutSeconds: ollamaTimeoutSeconds,
@@ -1897,6 +2180,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       final LlmProviderConfig nextRemote = _llmSettings.remote.copyWith(
         enabled: remoteEnabled,
         handle: remoteHandleController.text.trim(),
+        botName: remoteBotNameController.text.trim(),
         baseUrl: remoteBaseUrlController.text.trim(),
         model: remoteModelController.text.trim(),
         apiKey: remoteApiKeyController.text.trim(),
@@ -2077,6 +2361,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                         ),
                         const SizedBox(height: 12),
                         TextField(
+                          controller: ollamaBotNameController,
+                          enabled: ollamaEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Bot display name',
+                            hintText: 'Atlas',
+                            helperText:
+                                'Shows up in contacts and conversation replies',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
                           controller: ollamaBaseUrlController,
                           enabled: ollamaEnabled,
                           decoration: const InputDecoration(
@@ -2210,6 +2506,18 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                         ),
                         const SizedBox(height: 12),
                         TextField(
+                          controller: remoteBotNameController,
+                          enabled: remoteEnabled,
+                          decoration: const InputDecoration(
+                            labelText: 'Bot display name',
+                            hintText: 'Scout',
+                            helperText:
+                                'Shows up in contacts and conversation replies',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
                           controller: remoteBaseUrlController,
                           enabled: remoteEnabled,
                           decoration: const InputDecoration(
@@ -2318,11 +2626,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       setState(() {
         _llmSettings = nextSettings;
       });
+      await _loadContacts();
       _showAuthMessage('AI model settings updated.');
     } finally {
       ollamaHandleController.dispose();
+      ollamaBotNameController.dispose();
       ollamaBaseUrlController.dispose();
       remoteHandleController.dispose();
+      remoteBotNameController.dispose();
       remoteBaseUrlController.dispose();
       remoteModelController.dispose();
       remoteApiKeyController.dispose();
@@ -2819,8 +3130,17 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
-    await _sendContentMessage(ChatMessageContent.text(clearText));
-    _messageController.clear();
+    if (_selectedContact?.isBot == true) {
+      _messageController.clear();
+      await _sendMessageToSelectedBot(ChatMessageContent.text(clearText));
+      return;
+    }
+
+    final bool sent =
+        await _sendContentMessage(ChatMessageContent.text(clearText));
+    if (sent) {
+      _messageController.clear();
+    }
   }
 
   String _buildLocalThreadMessageId(String scope) {
@@ -2831,7 +3151,19 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     ].join(':');
   }
 
-  String _llmSpeakerLabelForEntry(_ConversationEntry entry) {
+  String _threadContactIdForConversationParticipant({
+    required String conversationContactId,
+    required String participantUserId,
+  }) {
+    return conversationContactId == participantUserId
+        ? ''
+        : conversationContactId;
+  }
+
+  String _llmSpeakerLabelForEntry(
+    _ConversationEntry entry, {
+    AppUser? contact,
+  }) {
     final AppUser? currentUser = _currentUser;
     if (currentUser != null && entry.message.fromUserId == currentUser.id) {
       return 'You';
@@ -2841,7 +3173,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
     return _displayNameForUserId(
       entry.message.fromUserId,
-      fallback: _selectedContact?.displayName,
+      fallback: contact?.displayName ?? _selectedContact?.displayName,
     );
   }
 
@@ -2864,9 +3196,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return text;
   }
 
-  List<LlmContextLine> _buildLlmContextLines() {
+  List<LlmContextLine> _buildLlmContextLinesForEntries(
+    List<_ConversationEntry> entries, {
+    AppUser? contact,
+  }) {
     final int maxCount = _llmSettings.contextMessageCount;
-    final List<_ConversationEntry> sourceEntries = _conversation
+    final List<_ConversationEntry> sourceEntries = entries
         .where(
           (_ConversationEntry entry) =>
               entry.content.kind != ChatMessageContentKind.reaction,
@@ -2878,7 +3213,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
         .sublist(startIndex)
         .map(
           (_ConversationEntry entry) => LlmContextLine(
-            speaker: _llmSpeakerLabelForEntry(entry),
+            speaker: _llmSpeakerLabelForEntry(entry, contact: contact),
             text: _llmTextForContent(entry.content),
           ),
         )
@@ -2924,22 +3259,101 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     return trimmedPrompt;
   }
 
-  Future<void> _storeLocalThreadMessage({
+  Future<List<_ConversationEntry>> _buildConversationEntriesForContact({
+    required String currentUserId,
+    required String contactUserId,
+  }) async {
+    final List<ChatMessage> messages =
+        await _messagingService.listForPair(currentUserId, contactUserId);
+    final List<_ConversationEntry> entries = <_ConversationEntry>[];
+    for (final ChatMessage message in messages) {
+      final ChatMessageContent content = await _decodeMessageContent(message);
+      if (content.kind == ChatMessageContentKind.reaction) {
+        continue;
+      }
+      entries.add(_ConversationEntry(message: message, content: content));
+    }
+    return entries;
+  }
+
+  String _conversationReplyPrompt({
+    required ChatMessageContent latestContent,
+    required String speakerLabel,
+    required bool directConversation,
+  }) {
+    final String latestText = _llmTextForContent(latestContent);
+    final String speaker =
+        speakerLabel.trim().isEmpty ? 'someone' : speakerLabel.trim();
+    if (latestText.isEmpty) {
+      return directConversation
+          ? 'Reply naturally to the latest message in this direct chat.'
+          : 'Reply naturally to the latest message in this chat as another participant.';
+    }
+    return directConversation
+        ? 'Reply naturally to the latest direct message from $speaker: "$latestText". Keep it concise and helpful.'
+        : 'Reply naturally to the latest message from $speaker: "$latestText". Join the conversation like another participant and keep it concise.';
+  }
+
+  bool _shouldConversationBotReplyToContent(ChatMessageContent content) {
+    switch (content.kind) {
+      case ChatMessageContentKind.reaction:
+      case ChatMessageContentKind.background:
+      case ChatMessageContentKind.assistant:
+        return false;
+      case ChatMessageContentKind.text:
+      case ChatMessageContentKind.image:
+      case ChatMessageContentKind.gif:
+      case ChatMessageContentKind.sticker:
+      case ChatMessageContentKind.video:
+      case ChatMessageContentKind.audio:
+      case ChatMessageContentKind.file:
+        return _llmTextForContent(content).trim().isNotEmpty;
+    }
+  }
+
+  Future<bool> _hasBotReplyForTrigger({
+    required String currentUserId,
+    required String conversationContactId,
+    required String botUserId,
+    required String triggerMessageLocalId,
+  }) async {
+    final List<_ConversationEntry> entries =
+        await _buildConversationEntriesForContact(
+      currentUserId: currentUserId,
+      contactUserId: conversationContactId,
+    );
+    for (final _ConversationEntry entry in entries) {
+      if (entry.message.fromUserId != botUserId) {
+        continue;
+      }
+      if (entry.content.referenceId == triggerMessageLocalId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<ChatMessage?> _storeLocalConversationMessage({
     required String fromUserId,
     required String toUserId,
-    required String threadContactId,
+    required String conversationContactId,
+    required String participantUserId,
     required ChatMessageContent content,
     String senderLabel = '',
     bool scrollToBottom = true,
   }) async {
     final AppUser? currentUser = _currentUser;
     if (currentUser == null) {
-      return;
+      return null;
     }
 
+    final String threadContactId = _threadContactIdForConversationParticipant(
+      conversationContactId: conversationContactId,
+      participantUserId: participantUserId,
+    );
     final DateTime sentAt = DateTime.now();
     final ChatMessage message = ChatMessage(
-      localId: _buildLocalThreadMessageId(threadContactId),
+      localId: _buildLocalThreadMessageId(conversationContactId),
       fromUserId: fromUserId,
       toUserId: toUserId,
       cipherText: content.toTransportPayload(),
@@ -2955,6 +3369,169 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       message: message,
     );
     await _refreshConversation(scrollToBottom: scrollToBottom);
+    return message;
+  }
+
+  Future<void> _generateConversationBotReply({
+    required LlmProviderConfig provider,
+    required AppUser conversationContact,
+    required String prompt,
+    required String triggerMessageLocalId,
+    bool factCheck = false,
+    String factCheckQuery = '',
+    bool showErrorsToUser = true,
+    bool scrollToBottom = true,
+  }) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    if (await _hasBotReplyForTrigger(
+      currentUserId: currentUser.id,
+      conversationContactId: conversationContact.id,
+      botUserId: provider.userId,
+      triggerMessageLocalId: triggerMessageLocalId,
+    )) {
+      return;
+    }
+
+    final List<_ConversationEntry> conversationEntries =
+        await _buildConversationEntriesForContact(
+      currentUserId: currentUser.id,
+      contactUserId: conversationContact.id,
+    );
+    final List<LlmContextLine> contextLines = _buildLlmContextLinesForEntries(
+      conversationEntries,
+      contact: conversationContact,
+    );
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isInvokingLlm = true;
+      _activeLlmHandle = provider.botDisplayName;
+    });
+
+    try {
+      final String reply = await _llmService.generateReply(
+        provider: provider,
+        prompt: prompt,
+        contextLines: contextLines,
+        factCheck: factCheck,
+        factCheckQuery: factCheckQuery,
+        contactName: conversationContact.displayName,
+        assistantName: provider.botDisplayName,
+        participantMode: true,
+      );
+      await _storeLocalConversationMessage(
+        fromUserId: provider.userId,
+        toUserId: currentUser.id,
+        conversationContactId: conversationContact.id,
+        participantUserId: provider.userId,
+        content: ChatMessageContent.assistant(
+          text: reply,
+          label: provider.botDisplayName,
+          referenceId: triggerMessageLocalId,
+        ),
+        senderLabel: provider.botDisplayName,
+        scrollToBottom: scrollToBottom,
+      );
+    } on LlmServiceException catch (e) {
+      await _storeLocalConversationMessage(
+        fromUserId: provider.userId,
+        toUserId: currentUser.id,
+        conversationContactId: conversationContact.id,
+        participantUserId: provider.userId,
+        content: ChatMessageContent.assistant(
+          text: 'I could not respond: ${e.message}',
+          label: provider.botDisplayName,
+          referenceId: triggerMessageLocalId,
+        ),
+        senderLabel: provider.botDisplayName,
+        scrollToBottom: scrollToBottom,
+      );
+      if (showErrorsToUser) {
+        _showAuthMessage(e.message);
+      }
+    } catch (_) {
+      const String errorMessage = 'Could not reach that model right now.';
+      await _storeLocalConversationMessage(
+        fromUserId: provider.userId,
+        toUserId: currentUser.id,
+        conversationContactId: conversationContact.id,
+        participantUserId: provider.userId,
+        content: ChatMessageContent.assistant(
+          text: 'I could not respond: $errorMessage',
+          label: provider.botDisplayName,
+          referenceId: triggerMessageLocalId,
+        ),
+        senderLabel: provider.botDisplayName,
+        scrollToBottom: scrollToBottom,
+      );
+      if (showErrorsToUser) {
+        _showAuthMessage(errorMessage);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isInvokingLlm = false;
+          _activeLlmHandle = '';
+        });
+      }
+    }
+  }
+
+  Future<void> _triggerConversationBotsForMessage({
+    required ChatMessage message,
+    required ChatMessageContent content,
+    required AppUser conversationContact,
+    bool scrollToBottom = false,
+  }) async {
+    final AppUser? currentUser = _currentUser;
+    if (currentUser == null ||
+        conversationContact.isBot ||
+        !_shouldConversationBotReplyToContent(content)) {
+      return;
+    }
+
+    final Iterable<String> botUserIds =
+        _selectedContact?.id == conversationContact.id
+            ? _enabledConversationBotUserIds
+            : await _conversationBotService.loadEnabledBotUserIds(
+                currentUserId: currentUser.id,
+                contactUserId: conversationContact.id,
+              );
+    final List<LlmProviderConfig> providers = botUserIds
+        .map(_providerForUserId)
+        .whereType<LlmProviderConfig>()
+        .toList();
+    if (providers.isEmpty) {
+      return;
+    }
+
+    final String speakerLabel = message.fromUserId == currentUser.id
+        ? 'You'
+        : _displayNameForUserId(
+            message.fromUserId,
+            fallback: conversationContact.displayName,
+          );
+    final String prompt = _conversationReplyPrompt(
+      latestContent: content,
+      speakerLabel: speakerLabel,
+      directConversation: false,
+    );
+    for (final LlmProviderConfig provider in providers) {
+      await _generateConversationBotReply(
+        provider: provider,
+        conversationContact: conversationContact,
+        prompt: prompt,
+        triggerMessageLocalId: message.localId,
+        showErrorsToUser: false,
+        scrollToBottom: scrollToBottom,
+      );
+    }
   }
 
   Future<void> _runLlmPrompt({
@@ -2970,86 +3547,84 @@ class _BackchatHomePageState extends State<BackchatHomePage>
       return;
     }
 
-    final List<LlmContextLine> contextLines = _buildLlmContextLines();
-    final String llmUserId = 'llm:${provider.normalizedHandle}';
     final String userBubbleText = displayText.trim().isEmpty
-        ? '@${provider.displayLabel} ${prompt.trim()}'
+        ? '${provider.mentionLabel} ${prompt.trim()}'
         : displayText.trim();
-    await _storeLocalThreadMessage(
+    final ChatMessage? promptMessage = await _storeLocalConversationMessage(
       fromUserId: currentUser.id,
-      toUserId: llmUserId,
-      threadContactId: selectedContact.id,
+      toUserId: provider.userId,
+      conversationContactId: selectedContact.id,
+      participantUserId: provider.userId,
       content: ChatMessageContent.text(userBubbleText),
     );
-
-    if (!mounted) {
+    if (promptMessage == null) {
       return;
     }
-    setState(() {
-      _isInvokingLlm = true;
-      _activeLlmHandle = provider.displayLabel;
-    });
 
-    try {
-      final String reply = await _llmService.generateReply(
-        provider: provider,
-        prompt: prompt,
-        contextLines: contextLines,
-        factCheck: factCheck,
-        factCheckQuery: factCheckQuery,
-        contactName: selectedContact.displayName,
-      );
-      final bool shared = await _sendContentMessage(
-        ChatMessageContent.assistant(
-          text: reply,
-          label: '@${provider.displayLabel}',
-        ),
-      );
-      if (!shared) {
-        await _storeLocalThreadMessage(
-          fromUserId: llmUserId,
-          toUserId: currentUser.id,
-          threadContactId: selectedContact.id,
-          content: ChatMessageContent.assistant(
-            text: reply,
-            label: '@${provider.displayLabel}',
-          ),
-          senderLabel: '@${provider.displayLabel}',
-        );
-      }
-    } on LlmServiceException catch (e) {
-      await _storeLocalThreadMessage(
-        fromUserId: llmUserId,
-        toUserId: currentUser.id,
-        threadContactId: selectedContact.id,
-        content: ChatMessageContent.assistant(
-          text: 'I could not respond: ${e.message}',
-          label: '@${provider.displayLabel}',
-        ),
-        senderLabel: '@${provider.displayLabel}',
-      );
-      _showAuthMessage(e.message);
-    } catch (_) {
-      const String errorMessage = 'Could not reach that model right now.';
-      await _storeLocalThreadMessage(
-        fromUserId: llmUserId,
-        toUserId: currentUser.id,
-        threadContactId: selectedContact.id,
-        content: ChatMessageContent.assistant(
-          text: 'I could not respond: $errorMessage',
-          label: '@${provider.displayLabel}',
-        ),
-        senderLabel: '@${provider.displayLabel}',
-      );
-      _showAuthMessage(errorMessage);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isInvokingLlm = false;
-          _activeLlmHandle = '';
-        });
-      }
+    await _generateConversationBotReply(
+      provider: provider,
+      conversationContact: selectedContact,
+      prompt: prompt,
+      triggerMessageLocalId: promptMessage.localId,
+      factCheck: factCheck,
+      factCheckQuery: factCheckQuery,
+      showErrorsToUser: true,
+      scrollToBottom: true,
+    );
+  }
+
+  Future<bool> _sendMessageToSelectedBot(ChatMessageContent content) async {
+    final AppUser? currentUser = _currentUser;
+    final AppUser? selectedContact = _selectedContact;
+    if (currentUser == null ||
+        selectedContact == null ||
+        !selectedContact.isBot) {
+      return false;
     }
+
+    final LlmProviderConfig? provider = _providerForUserId(selectedContact.id);
+    if (provider == null) {
+      _showAuthMessage('That AI bot is no longer configured.');
+      return false;
+    }
+
+    final String payload = content.toTransportPayload();
+    final int payloadSize = utf8.encode(payload).length;
+    if (payloadSize > (MediaAttachmentService.maxInlineBytes * 2)) {
+      _showAuthMessage(
+        'That message is too large to keep in the local AI chat history.',
+      );
+      return false;
+    }
+
+    final ChatMessage? userMessage = await _storeLocalConversationMessage(
+      fromUserId: currentUser.id,
+      toUserId: provider.userId,
+      conversationContactId: selectedContact.id,
+      participantUserId: provider.userId,
+      content: content,
+    );
+    if (userMessage == null) {
+      return false;
+    }
+    if (!_shouldConversationBotReplyToContent(content)) {
+      return true;
+    }
+
+    final String prompt = _conversationReplyPrompt(
+      latestContent: content,
+      speakerLabel: 'You',
+      directConversation: true,
+    );
+    await _generateConversationBotReply(
+      provider: provider,
+      conversationContact: selectedContact,
+      prompt: prompt,
+      triggerMessageLocalId: userMessage.localId,
+      showErrorsToUser: true,
+      scrollToBottom: true,
+    );
+    return true;
   }
 
   Future<void> _factCheckCurrentConversation() async {
@@ -3180,6 +3755,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     if (currentUser == null || selectedContact == null) {
       return false;
     }
+    if (selectedContact.isBot) {
+      return _sendMessageToSelectedBot(content);
+    }
 
     final ChatMessageContent preparedContent;
     try {
@@ -3267,8 +3845,14 @@ class _BackchatHomePageState extends State<BackchatHomePage>
     }
 
     _clearMediaUploadProgress();
-    await _tryAutoSaveImageMessage(message: message, content: content);
+    await _tryAutoSaveImageMessage(message: message, content: preparedContent);
     await _refreshConversation(scrollToBottom: scrollToBottom);
+    await _triggerConversationBotsForMessage(
+      message: message,
+      content: preparedContent,
+      conversationContact: selectedContact,
+      scrollToBottom: scrollToBottom,
+    );
     await _syncMessages(showErrors: false);
     return true;
   }
@@ -3991,9 +4575,21 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   List<Widget> _buildMobileConversationAppBarActions(AppUser contact) {
+    if (contact.isBot) {
+      return const <Widget>[];
+    }
     final bool anotherCallIsActive = _callService.state.isInProgress &&
         _callService.state.peer?.id != contact.id;
     return <Widget>[
+      IconButton(
+        tooltip: 'AI bots',
+        onPressed: _editConversationBots,
+        icon: Icon(
+          _enabledConversationBotUserIds.isEmpty
+              ? Icons.smart_toy_outlined
+              : Icons.smart_toy,
+        ),
+      ),
       IconButton(
         tooltip: 'Voice call',
         onPressed:
@@ -4344,7 +4940,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               ),
               const SizedBox(width: 8),
               Text(
-                'Checking with @$_activeLlmHandle',
+                'Checking with $_activeLlmHandle',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -4434,9 +5030,12 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 ? NetworkImage(selectedContact.avatarUrl)
                 : null,
             child: selectedContact.avatarUrl.isEmpty
-                ? Text(
-                    selectedContact.displayName.characters.first.toUpperCase(),
-                  )
+                ? (selectedContact.isBot
+                    ? const Icon(Icons.smart_toy_outlined)
+                    : Text(
+                        selectedContact.displayName.characters.first
+                            .toUpperCase(),
+                      ))
                 : null,
           ),
           const SizedBox(width: 12),
@@ -4467,18 +5066,30 @@ class _BackchatHomePageState extends State<BackchatHomePage>
               onPressed: _clearConversationBackground,
               icon: const Icon(Icons.wallpaper_outlined),
             ),
-          IconButton(
-            tooltip: 'Voice call',
-            onPressed:
-                anotherCallIsActive ? null : () => _startCall(CallKind.audio),
-            icon: const Icon(Icons.call_outlined),
-          ),
-          IconButton(
-            tooltip: 'Video call',
-            onPressed:
-                anotherCallIsActive ? null : () => _startCall(CallKind.video),
-            icon: const Icon(Icons.videocam_outlined),
-          ),
+          if (!selectedContact.isBot)
+            IconButton(
+              tooltip: 'AI bots',
+              onPressed: _editConversationBots,
+              icon: Icon(
+                _enabledConversationBotUserIds.isEmpty
+                    ? Icons.smart_toy_outlined
+                    : Icons.smart_toy,
+              ),
+            ),
+          if (!selectedContact.isBot)
+            IconButton(
+              tooltip: 'Voice call',
+              onPressed:
+                  anotherCallIsActive ? null : () => _startCall(CallKind.audio),
+              icon: const Icon(Icons.call_outlined),
+            ),
+          if (!selectedContact.isBot)
+            IconButton(
+              tooltip: 'Video call',
+              onPressed:
+                  anotherCallIsActive ? null : () => _startCall(CallKind.video),
+              icon: const Icon(Icons.videocam_outlined),
+            ),
         ],
       ),
     );
@@ -4966,7 +5577,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${_contacts.length} saved contacts',
+                  '${_contacts.length} chats',
                   style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 14),
@@ -5011,9 +5622,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
           Expanded(
             child: _contacts.isEmpty
                 ? _buildEmptyConversationState(
-                    title: 'No contacts yet',
+                    title: 'No chats yet',
                     subtitle:
-                        'Add someone by username to see them here with online status and unread counts.',
+                        'Add someone by username or enable an AI bot to see chats here.',
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.all(10),
@@ -5055,7 +5666,7 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${_contacts.length} saved contacts',
+                  '${_contacts.length} chats',
                   style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 14),
@@ -5075,9 +5686,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
             Padding(
               padding: const EdgeInsets.all(18),
               child: _buildEmptyConversationState(
-                title: 'No contacts yet',
+                title: 'No chats yet',
                 subtitle:
-                    'Add someone by username to see them here with online status and unread counts.',
+                    'Add someone by username or enable an AI bot to see chats here.',
               ),
             )
           else
@@ -5131,24 +5742,27 @@ class _BackchatHomePageState extends State<BackchatHomePage>
                         ? NetworkImage(contact.avatarUrl)
                         : null,
                     child: contact.avatarUrl.isEmpty
-                        ? Text(
-                            contact.displayName.characters.first.toUpperCase())
+                        ? (contact.isBot
+                            ? const Icon(Icons.smart_toy_outlined)
+                            : Text(contact.displayName.characters.first
+                                .toUpperCase()))
                         : null,
                   ),
-                  Positioned(
-                    right: -1,
-                    bottom: -1,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surface,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(2),
-                        child: _buildPresenceDot(contact.status),
+                  if (!contact.isBot)
+                    Positioned(
+                      right: -1,
+                      bottom: -1,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surface,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(2),
+                          child: _buildPresenceDot(contact.status),
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
               const SizedBox(width: 12),
@@ -5993,6 +6607,9 @@ class _BackchatHomePageState extends State<BackchatHomePage>
   }
 
   String _contactStatusLabel(AppUser contact) {
+    if (contact.isBot) {
+      return contact.quote.trim().isEmpty ? 'AI bot' : contact.quote.trim();
+    }
     return switch (contact.status) {
       PresenceStatus.online => 'Online now',
       PresenceStatus.busy => 'Busy',

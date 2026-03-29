@@ -162,6 +162,8 @@ class LlmService {
     bool factCheck = false,
     String factCheckQuery = '',
     String contactName = '',
+    String assistantName = '',
+    bool participantMode = false,
   }) async {
     if (!provider.isConfigured) {
       throw const LlmServiceException(
@@ -177,6 +179,8 @@ class LlmService {
         : const <LlmNewsSource>[];
     final String systemPrompt = _buildSystemPrompt(
       factCheck: shouldFetchNews,
+      participantMode: participantMode,
+      assistantName: assistantName,
     );
     final String userPrompt = _buildUserPrompt(
       prompt: prompt,
@@ -184,6 +188,7 @@ class LlmService {
       newsSources: newsSources,
       contactName: contactName,
       factCheck: shouldFetchNews,
+      participantMode: participantMode,
     );
 
     return switch (provider.kind) {
@@ -367,16 +372,27 @@ class LlmService {
 
   String _buildSystemPrompt({
     required bool factCheck,
+    required bool participantMode,
+    required String assistantName,
   }) {
+    final String identityInstruction = assistantName.trim().isEmpty
+        ? ''
+        : ' Your display name in the app is ${assistantName.trim()}.';
     if (factCheck) {
       return 'You are a careful fact-checking assistant inside a messaging app. '
+          '$identityInstruction'
           'Use the recent thread context and any supplied news/web sources. '
           'Separate confirmed facts from rumors, mention uncertainty clearly, '
           'and cite useful sources with markdown links.';
     }
-    return 'You are a concise assistant inside a messaging app. '
+    final String roleInstruction = participantMode
+        ? 'Write exactly one natural chat reply as a participant in the conversation, not as a narrator or analyst. '
+        : '';
+    return 'You are a concise assistant inside a messaging app.'
+        '$identityInstruction '
         'Use the recent thread context when it matters, answer directly, '
-        'and avoid pretending to know things that are not supported.';
+        'and avoid pretending to know things that are not supported. '
+        '$roleInstruction';
   }
 
   String _buildUserPrompt({
@@ -385,6 +401,7 @@ class LlmService {
     required List<LlmNewsSource> newsSources,
     required String contactName,
     required bool factCheck,
+    required bool participantMode,
   }) {
     final StringBuffer buffer = StringBuffer();
     if (contactName.trim().isNotEmpty) {
@@ -432,7 +449,9 @@ class LlmService {
     buffer.writeln(
       factCheck
           ? 'Reply with a short verdict first, then the reasoning and sources.'
-          : 'Reply naturally as the assistant in this thread.',
+          : participantMode
+              ? 'Reply naturally as a participant in this thread.'
+              : 'Reply naturally as the assistant in this thread.',
     );
     return buffer.toString().trim();
   }

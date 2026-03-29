@@ -319,6 +319,7 @@ h1 {
 }
 
 .downloads-grid,
+.screenshots-grid,
 .feature-grid,
 .security-grid {
   display: grid;
@@ -327,6 +328,10 @@ h1 {
 
 .downloads-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.screenshots-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .feature-grid {
@@ -338,6 +343,7 @@ h1 {
 }
 
 .download-card,
+.screenshot-card,
 .feature-card,
 .security-card {
   border-radius: 22px;
@@ -352,6 +358,31 @@ h1 {
 
 .download-card.unavailable {
   opacity: 0.74;
+}
+
+.screenshot-card {
+  margin: 0;
+  background: rgba(255, 253, 249, 0.82);
+  border: 1px solid rgba(21, 32, 51, 0.08);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 14px;
+}
+
+.screenshot-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+}
+
+.screenshot-card figcaption {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .download-card h3,
@@ -451,6 +482,7 @@ tbody td {
 @media (max-width: 960px) {
   .hero__content,
   .downloads-grid,
+  .screenshots-grid,
   .feature-grid,
   .security-grid {
     grid-template-columns: 1fr;
