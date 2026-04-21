@@ -22,6 +22,53 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
+    <style data-footer-adsense-style>
+      .footer-adsense {
+        width: 100%;
+        display: grid;
+        gap: 12px;
+        margin-top: 20px;
+        padding-top: 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      .footer-adsense__label {
+        margin: 0;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.68);
+      }
+
+      .footer-adsense__unit {
+        display: block;
+        width: 100%;
+        min-height: 90px;
+      }
+    </style>
+    <script src="./adsense-config.js"></script>
+    <script>
+      (function () {
+        const config = window.__FOOTER_ADSENSE__;
+        if (
+          !config ||
+          !config.client ||
+          !config.slot ||
+          document.querySelector("script[data-footer-adsense-loader]")
+        ) {
+          return;
+        }
+
+        const script = document.createElement("script");
+        script.async = true;
+        script.src =
+          "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=" +
+          encodeURIComponent(config.client);
+        script.crossOrigin = "anonymous";
+        script.dataset.footerAdsenseLoader = "true";
+        document.head.appendChild(script);
+      })();
+    </script>
     <script type="application/ld+json">
 $structured_data
     </script>
@@ -230,6 +277,38 @@ $checksum_rows
           <a href="./delete-account.html">Delete Account</a>
           <a href="https://github.com/$owner_repo/issues">Issue tracker</a>
         </div>
+        <div class="footer-adsense" data-footer-adsense hidden>
+          <p class="footer-adsense__label">Advertisement</p>
+          <ins
+            class="adsbygoogle footer-adsense__unit"
+            style="display:block"
+            data-ad-format="auto"
+            data-full-width-responsive="true"
+          ></ins>
+        </div>
+        <script>
+          (function () {
+            const wrapper = document.currentScript.previousElementSibling;
+            const config = window.__FOOTER_ADSENSE__;
+            if (!wrapper || !config || !config.client || !config.slot) {
+              return;
+            }
+
+            const unit = wrapper.querySelector(".adsbygoogle");
+            if (!unit) {
+              return;
+            }
+
+            unit.setAttribute("data-ad-client", config.client);
+            unit.setAttribute("data-ad-slot", config.slot);
+            wrapper.hidden = false;
+            try {
+              (window.adsbygoogle = window.adsbygoogle || []).push({});
+            } catch (error) {
+              console.error("Footer AdSense failed to render", error);
+            }
+          })();
+        </script>
       </footer>
     </div>
   </body>

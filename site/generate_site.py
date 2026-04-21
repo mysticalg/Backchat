@@ -588,6 +588,8 @@ def main() -> None:
     )
     (OUTPUT_DIR / ".nojekyll").write_text("", encoding="utf-8")
     copy_static_file("styles.css")
+    copy_static_file("adsense-config.js")
+    copy_static_file("ads.txt")
     (OUTPUT_DIR / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}sitemap.xml\n",
         encoding="utf-8",
